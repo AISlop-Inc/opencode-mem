@@ -9,6 +9,7 @@ import {
   isInternalStructuredSession,
   isProviderConnected,
   noteStructuredOutputStep,
+  releaseV2Client,
   resetHostFetch,
   resetInternalStructuredSessions,
   setConnectedProviders,
@@ -1573,5 +1574,18 @@ describe("generateStructuredOutput tool isolation (issue #189)", () => {
 
     expect(sawDuringPrompt).toBe(true);
     expect(isInternalStructuredSession("ses_track")).toBe(false);
+  });
+});
+
+describe("v2 client release", () => {
+  it("hands over to a live client when the active location closes", () => {
+    const first = { session: {} } as never;
+    const second = { session: {} } as never;
+    setV2Client(first);
+    setV2Client(second);
+    releaseV2Client(second);
+    expect(getV2Client()).toBe(first);
+    releaseV2Client(first);
+    expect(getV2Client()).not.toBe(first);
   });
 });

@@ -113,6 +113,7 @@ const _structuredStepAbortErrors = new Map<string, Error>();
 
 let _connectedProviders: Set<string> = new Set();
 let _v2Client: OpencodeClient | undefined;
+const _v2Clients = new Set<OpencodeClient>();
 let _v2BaseUrl: string | undefined;
 let _hostFetch: typeof fetch | undefined;
 let _useSdkTransport = false;
@@ -166,11 +167,19 @@ export async function ensureProviderConnected(providerName: string): Promise<boo
 
 export function setV2Client(client: OpencodeClient): void {
   _v2Client = client;
+  _v2Clients.add(client);
   // Native v2 adapters pass a session-capable client without a server URL.
   // Enable the SDK transport path so structured output does not require createV2Client.
   if (hasV2SessionClient(client)) {
     _useSdkTransport = true;
   }
+}
+
+// Each OpenCode location registers a client bound to that location, and this module is shared by all of them.
+// One that closes must hand over to a live client, or later captures run on a closed location.
+export function releaseV2Client(client: OpencodeClient): void {
+  _v2Clients.delete(client);
+  if (_v2Client === client) _v2Client = [..._v2Clients].at(-1);
 }
 
 export function getV2Client(): OpencodeClient | undefined {
