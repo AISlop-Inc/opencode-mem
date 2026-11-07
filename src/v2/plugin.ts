@@ -22,7 +22,8 @@ const OpenCodeMemPluginV2: Plugin = {
 
     // The V1 initializer cannot discover a server URL from a native V2
     // context. Route internal structured-output calls through the adapter.
-    const { releaseV2Client, setV2Client, setStructuredOutputTimeoutConfig } = await loadOpencodeProvider();
+    const { releaseV2Client, setV2Client, setStructuredOutputTimeoutConfig } =
+      await loadOpencodeProvider();
     setV2Client(legacyClient);
     // Same timeout wiring as the V1 init path (configureOpencodeHostTransport):
     // the bundled provider module must not import config.js itself.
