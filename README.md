@@ -1,8 +1,11 @@
+> AISlop-Inc npm package: `@aislop-inc/opencode-mem`.
+> Manual release instructions: [npm publishing](docs/NPM-PUBLISHING.md).
+
 # OpenCode Memory
 
-[![npm version](https://img.shields.io/npm/v/opencode-mem.svg)](https://www.npmjs.com/package/opencode-mem)
-[![npm downloads](https://img.shields.io/npm/dm/opencode-mem.svg)](https://www.npmjs.com/package/opencode-mem)
-[![license](https://img.shields.io/npm/l/opencode-mem.svg)](https://www.npmjs.com/package/opencode-mem)
+[![npm version](https://img.shields.io/npm/v/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
+[![npm downloads](https://img.shields.io/npm/dm/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
+[![license](https://img.shields.io/npm/l/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
 [![GitHub stars](https://img.shields.io/github/stars/tickernelz/opencode-mem.svg)](https://github.com/tickernelz/opencode-mem)
 [![Website](https://img.shields.io/badge/website-opencode--mem.zhafron.my.id-blue)](https://opencode-mem.zhafron.my.id)
 [![Docs](https://img.shields.io/badge/docs-opencode--mem.zhafron.my.id%2Fdocs-blue)](https://opencode-mem.zhafron.my.id/docs/)
@@ -121,7 +124,7 @@ For OpenCode v2, add the package to the native `plugins` list:
 
 ```jsonc
 {
-  "plugins": ["opencode-mem@latest"],
+  "plugins": ["@aislop-inc/opencode-mem@latest"],
 }
 ```
 
@@ -137,11 +140,11 @@ For OpenCode v1, add the default entrypoint to your configuration at
 
 ```jsonc
 {
-  "plugin": ["opencode-mem@latest"],
+  "plugin": ["@aislop-inc/opencode-mem@latest"],
 }
 ```
 
-With `@latest` (or a semver range) and `autoUpdate: true` in `opencode-mem.jsonc` (default), the plugin clears OpenCode's cached install when a newer npm release is available and asks you to restart. Pinned versions like `opencode-mem@2.26.0` are never auto-updated.
+With `@latest` (or a semver range) and `autoUpdate: true` in `opencode-mem.jsonc` (default), the plugin clears OpenCode's cached install when a newer npm release is available and asks you to restart. Pinned versions like `@aislop-inc/opencode-mem@2.26.0` are never auto-updated.
 
 ### Automatic memory context on OpenCode v2
 
@@ -470,7 +473,7 @@ Example — local bge-m3 (pooling defaults to CLS via preset; override if needed
 
 Changing `embeddingModel`, dimensions, pooling, or task prefixes can require re-embedding stored memories so store and query vectors stay aligned. Prefer picking a model (and pooling/prefix settings) once and sticking with them for a given data directory.
 
-**Unsupported — Intel Mac (`darwin/x64`):** Local persistence requires `@tursodatabase/database`, which does not publish an Intel Mac native binding. Fixed `onnxruntime-node` releases (`1.24.1+`, including the pinned `1.31.1`) also lack darwin/x64. Use an Apple Silicon Mac, Linux, or Windows, or a remote endpoint via `embeddingApiUrl` + `embeddingApiKey` (example above). On supported platforms, `opencode-mem` pins `onnxruntime-node@1.31.1` (Ort::Env teardown fix from `1.24.1` / #225) and loads transformers through a CJS resolve shim so OpenCode nested installs keep that binding. Transformers is resolved to an absolute path before that shim is installed so OpenCode's Bun `--compile` host does not fail with `Cannot find module '@huggingface/transformers' from ''`. After upgrading, clear OpenCode's nested plugin cache (`~/.cache/opencode/packages/opencode-mem@*`) and reinstall.
+**Unsupported — Intel Mac (`darwin/x64`):** Local persistence requires `@tursodatabase/database`, which does not publish an Intel Mac native binding. Fixed `onnxruntime-node` releases (`1.24.1+`, including the pinned `1.31.1`) also lack darwin/x64. Use an Apple Silicon Mac, Linux, or Windows, or a remote endpoint via `embeddingApiUrl` + `embeddingApiKey` (example above). On supported platforms, `opencode-mem` pins `onnxruntime-node@1.31.1` (Ort::Env teardown fix from `1.24.1` / #225) and loads transformers through a CJS resolve shim so OpenCode nested installs keep that binding. Transformers is resolved to an absolute path before that shim is installed so OpenCode's Bun `--compile` host does not fail with `Cannot find module '@huggingface/transformers' from ''`. After upgrading, clear OpenCode's nested plugin cache (`~/.cache/opencode/packages/@aislop-inc/opencode-mem@*`) and reinstall.
 
 ### Memory Scope
 
@@ -803,7 +806,7 @@ MIT License - see LICENSE file
 - **Docs**: https://opencode-mem.zhafron.my.id/docs/
 - **Repository**: https://github.com/tickernelz/opencode-mem
 - **Issues**: https://github.com/tickernelz/opencode-mem/issues
-- **npm**: https://www.npmjs.com/package/opencode-mem
+- **npm**: https://www.npmjs.com/package/@aislop-inc/opencode-mem
 - **OpenCode Platform**: https://opencode.ai
 
 Inspired by [opencode-supermemory](https://github.com/supermemoryai/opencode-supermemory)

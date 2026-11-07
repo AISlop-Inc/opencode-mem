@@ -3,6 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginInput } from "@opencode-ai/plugin";
 import { log } from "./logger.js";
+import pkgJson from "../../package.json" with { type: "json" };
 
 type PackageJson = {
   name?: string;
@@ -15,7 +16,7 @@ type UpdateResult =
   | { updated: false; error: "remove_failed"; name: string; current: string; latest: string }
   | { updated: false };
 
-const PACKAGE_NAME = "opencode-mem";
+const PACKAGE_NAME: string = pkgJson.name;
 
 export function startAutoUpdate(ctx: PluginInput, enabled: boolean): void {
   if (!enabled) return;

@@ -83,13 +83,13 @@ console.log(
     : "✔ live workspace check (no wrapper remove)"
 );
 
-const res = await fetch("https://registry.npmjs.org/opencode-mem/latest", {
+const res = await fetch("https://registry.npmjs.org/%40aislop-inc%2Fopencode-mem/latest", {
   signal: AbortSignal.timeout(10_000),
 });
 assert.equal(res.ok, true);
 const body = await res.json();
 assert.ok(typeof body.version === "string");
-console.log(`✔ npm latest opencode-mem@${body.version}`);
+console.log(`✔ npm latest @aislop-inc/opencode-mem@${body.version}`);
 
 assert.doesNotThrow(() =>
   startAutoUpdate({ client: { tui: { showToast: async () => undefined } } }, false)

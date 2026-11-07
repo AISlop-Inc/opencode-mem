@@ -1,5 +1,5 @@
 {
-  "name": "opencode-mem",
+  "name": "@aislop-inc/opencode-mem",
   "version": "2.41.1",
   "description": "OpenCode plugin that gives coding agents persistent memory using local Turso/libSQL vector search",
   "type": "module",
@@ -54,11 +54,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tickernelz/opencode-mem.git"
+    "url": "git+https://github.com/AISlop-Inc/opencode-mem.git"
   },
-  "homepage": "https://opencode-mem.zhafron.my.id",
+  "homepage": "https://github.com/AISlop-Inc/opencode-mem#readme",
   "bugs": {
-    "url": "https://github.com/tickernelz/opencode-mem/issues"
+    "url": "https://github.com/AISlop-Inc/opencode-mem/issues"
   },
   "publishConfig": {
     "access": "public"

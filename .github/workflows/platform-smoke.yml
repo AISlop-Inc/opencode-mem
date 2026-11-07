@@ -69,7 +69,7 @@ jobs:
           mkdir -p "$pack_dir" "$smoke_dir"
 
           npm pack --pack-destination "$pack_dir"
-          tarball_path=$(find "$pack_dir" -name "opencode-mem-*.tgz" -print -quit)
+          tarball_path=$(find "$pack_dir" -name "*opencode-mem-*.tgz" -print -quit)
           test -n "$tarball_path"
 
           cd "$smoke_dir"

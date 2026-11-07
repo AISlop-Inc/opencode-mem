@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { basename, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
+const PACKAGE_NAME = "@aislop-inc/opencode-mem";
 const requireFromHere = createRequire(import.meta.url);
 const projectRoot = process.cwd();
 const lockfilePath = join(projectRoot, "package-lock.json");
@@ -53,12 +54,12 @@ function matchesSelectorList(selectors, current) {
 
 function collectRuntimeClosure(lockfile) {
   const packages = lockfile.packages ?? {};
-  const root = packages[getLockPathForPackage("opencode-mem")];
+  const root = packages[getLockPathForPackage(PACKAGE_NAME)];
   if (!root) {
-    throw new Error("Installed opencode-mem package not found in package-lock.json");
+    throw new Error(`Installed ${PACKAGE_NAME} package not found in package-lock.json`);
   }
 
-  const queue = ["opencode-mem"];
+  const queue = [PACKAGE_NAME];
   const seen = new Set();
 
   while (queue.length > 0) {
@@ -176,7 +177,7 @@ function formatError(error) {
 }
 
 const lockfile = readJson(lockfilePath);
-const opencodeMemPkgPath = join(projectRoot, "node_modules", "opencode-mem", "package.json");
+const opencodeMemPkgPath = join(projectRoot, "node_modules", PACKAGE_NAME, "package.json");
 const rootPkg = existsSync(opencodeMemPkgPath)
   ? readJson(opencodeMemPkgPath)
   : readJson(join(projectRoot, "package.json"));
