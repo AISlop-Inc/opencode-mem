@@ -14,6 +14,7 @@ These are corpus-specific operating points, not universal model defaults.
   "embeddingDimensions": 1024,
   "embeddingPooling": "cls",
   "embeddingDtype": "q8",
+  "similarityThreshold": 0.375,
   "chatMessage": { "maxMemories": 3, "similarityThreshold": 0.41 },
   "updateOnCaptureSimilarityThreshold": 0.7,
   "dreaming": { "relatedThreshold": 0.725 },
@@ -28,8 +29,13 @@ and trash timestamps.
 After switching models in an already-running host, restart the OpenCode service
 once: the process-wide embedding singleton can otherwise retain the previous
 model across a plugin reload, even when migration detection shows the new model.
-The auto-injection cutoff was evaluated with a three-memory cap; manual
-search, duplicate detection, and profile matching need separate calibration.
+The auto-injection cutoff was evaluated with a three-memory cap and usefulness
+judgments.
+The separate 0.375 explicit-search cutoff used a ten-memory cap and retained
+430/451 retrievable known-source targets in 489 synthetic test queries.
+This is source-target recall, not human usefulness precision, and does not
+validate cross-project search.
+Duplicate detection and profile matching still need separate calibration.
 
 [![npm version](https://img.shields.io/npm/v/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
 [![npm downloads](https://img.shields.io/npm/dm/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
