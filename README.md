@@ -25,6 +25,9 @@ migration rather than a fresh start.
 Migration detects model-name changes even at the same dimension, rebuilds
 content/tag vectors and profile centroids, and preserves session links, pins,
 and trash timestamps.
+After switching models in an already-running host, restart the OpenCode service
+once: the process-wide embedding singleton can otherwise retain the previous
+model across a plugin reload, even when migration detection shows the new model.
 The auto-injection cutoff was evaluated with a three-memory cap; manual
 search, duplicate detection, and profile matching need separate calibration.
 
