@@ -3,6 +3,31 @@
 
 # OpenCode Memory
 
+## BGE-M3 migration
+
+An experimental Japanese-memory calibration used the following local settings.
+These are corpus-specific operating points, not universal model defaults.
+
+```jsonc
+{
+  "embeddingModel": "Xenova/bge-m3",
+  "embeddingDimensions": 1024,
+  "embeddingPooling": "cls",
+  "embeddingDtype": "q8",
+  "chatMessage": { "maxMemories": 3, "similarityThreshold": 0.41 },
+  "updateOnCaptureSimilarityThreshold": 0.7,
+  "dreaming": { "relatedThreshold": 0.725 },
+}
+```
+
+Back up the store before changing models, then use the Web UI's **re-embed**
+migration rather than a fresh start.
+Migration detects model-name changes even at the same dimension, rebuilds
+content/tag vectors and profile centroids, and preserves session links, pins,
+and trash timestamps.
+The auto-injection cutoff was evaluated with a three-memory cap; manual
+search, duplicate detection, and profile matching need separate calibration.
+
 [![npm version](https://img.shields.io/npm/v/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
 [![npm downloads](https://img.shields.io/npm/dm/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
 [![license](https://img.shields.io/npm/l/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
