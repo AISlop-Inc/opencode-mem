@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const rootIndex = new URL("../index.js", import.meta.url);
 const distPlugin = new URL("../dist/plugin.js", import.meta.url);
@@ -17,7 +17,10 @@ describe("local checkout root entrypoint", () => {
     const root = await import(rootIndex.href);
     const dist = await import(distPlugin.href);
     expect(root.default).toBeDefined();
-    expect(root.default.id).toBe("opencode-mem");
+    const packageName = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8")
+    ).name;
+    expect(root.default.id).toBe(packageName);
     expect(typeof root.default.setup).toBe("function");
     expect(typeof root.default.server).toBe("function");
     expect(root.default.id).toBe(dist.default.id);

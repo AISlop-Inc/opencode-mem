@@ -3,7 +3,7 @@
 
 # OpenCode Memory
 
-## BGE-M3 migration
+**BGE-M3 migration**
 
 An experimental Japanese-memory calibration used the following local settings.
 These are corpus-specific operating points, not universal model defaults.
