@@ -31,6 +31,9 @@ describe("turso re-embed migration safety", () => {
     CONFIG.embeddingDimensions = 2;
     CONFIG.databaseEncryptionEnabled = false;
     CONFIG.databaseEncryptionKey = undefined;
+    const { userProfileManager } =
+      await import("../src/services/user-profile/user-profile-manager.js");
+    userProfileManager.reset();
 
     const { tursoShardManager } = await import("../src/services/turso/shard-manager.js");
     const { tursoConnectionManager } = await import("../src/services/turso/connection-manager.js");
@@ -50,12 +53,14 @@ describe("turso re-embed migration safety", () => {
         createdAt: 100 + index,
         updatedAt: 200 + index,
         metadata: JSON.stringify({ source: "test", index }),
+        sessionId: `session_${index}`,
         displayName: `Memory ${index}`,
         projectPath: `/project/${index}`,
       });
       await tursoShardManager.incrementVectorCount(shard.id);
     }
     await tursoVectorSearch.pinMemory(db, "mem_one");
+    await db.execute(`UPDATE memories SET deleted_at = 12345 WHERE id = 'mem_two'`);
     return shard;
   }
 
@@ -101,6 +106,9 @@ describe("turso re-embed migration safety", () => {
     expect(String(rows[0]?.tags)).toBe("alpha,beta");
     expect(String(rows[0]?.display_name)).toBe("Memory 0");
     expect(Number(rows[0]?.is_pinned)).toBe(1);
+    expect(rows[0]?.session_id).toBe("session_0");
+    expect(rows[1]?.session_id).toBe("session_1");
+    expect(Number(rows[1]?.deleted_at)).toBe(12345);
     expect(JSON.parse(String(rows[0]?.vector_json))).toHaveLength(4);
     const metadata = await db.get(
       `SELECT value FROM shard_metadata WHERE key = 'embedding_dimensions'`
@@ -131,6 +139,59 @@ describe("turso re-embed migration safety", () => {
       `SELECT value FROM shard_metadata WHERE key = 'embedding_dimensions'`
     );
     expect(Number(metadata?.value)).toBe(2);
+  });
+
+  it("detects a model change even when dimensions match", async () => {
+    const shard = await createSourceShard();
+    const { tursoConnectionManager } = await import("../src/services/turso/connection-manager.js");
+    const db = await tursoConnectionManager.getConnection(shard.dbPath);
+    await db.execute(
+      `UPDATE shard_metadata SET value = 'other-model' WHERE key = 'embedding_model'`
+    );
+    const { migrationService } = await import("../src/services/migration-service.js");
+    expect((await migrationService.detectDimensionMismatch()).needsMigration).toBe(true);
+  });
+
+  it("re-embeds profile centroids and anchors without changing profile history", async () => {
+    await createSourceShard();
+    const { userProfileManager } =
+      await import("../src/services/user-profile/user-profile-manager.js");
+    userProfileManager.reset();
+    const id = await userProfileManager.createProfile(
+      "user",
+      "User",
+      "user",
+      "",
+      {
+        preferences: [
+          {
+            category: "style",
+            description: "Prefer concise replies",
+            confidence: 1,
+            frequency: 1,
+            evidence: [],
+            lastSeen: 123,
+            centroid: [1, 0],
+            anchor: [1, 0],
+          },
+        ],
+        patterns: [],
+        workflows: [],
+      },
+      1
+    );
+    await stubEmbedding();
+    const { CONFIG } = await import("../src/config.js");
+    CONFIG.embeddingDimensions = 4;
+    const { migrationService } = await import("../src/services/migration-service.js");
+    expect((await migrationService.migrateToNewModel("re-embed")).success).toBe(true);
+    const profile = await userProfileManager.getActiveProfile("user");
+    expect(profile?.id).toBe(id);
+    expect(profile?.version).toBe(1);
+    const data = JSON.parse(profile!.profileData);
+    expect(data.preferences[0].centroid).toEqual([1, 0, 0, 0]);
+    expect(data.preferences[0].anchor).toEqual([1, 0, 0, 0]);
+    expect(data.preferences[0].lastSeen).toBe(123);
   });
 
   for (const loseLock of [false, true]) {

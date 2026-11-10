@@ -401,6 +401,35 @@ export class UserProfileManager {
     return this.rowToProfile(row);
   }
 
+  async reembedProfiles(heartbeat: () => void): Promise<void> {
+    const db = await this.ready();
+    const rows = await db.all(`SELECT id, profile_data FROM user_profiles`);
+    for (const row of rows) {
+      const original = String(row.profile_data);
+      const data: UserProfileData = JSON.parse(original);
+      for (const item of [
+        ...safeArray<UserProfileData["preferences"][number]>(data.preferences),
+        ...safeArray<UserProfileData["patterns"][number]>(data.patterns),
+        ...safeArray<UserProfileData["workflows"][number]>(data.workflows),
+      ]) {
+        heartbeat();
+        const vector = await EmbeddingService.getInstance().embedWithTimeout(
+          normalizeDescription(item.description),
+          { task: "document" }
+        );
+        item.centroid = Array.from(vector);
+        item.anchor = Array.from(vector);
+      }
+      heartbeat();
+      // Never overwrite a profile updated while its embeddings were computed.
+      const changes = await db.run(
+        `UPDATE user_profiles SET profile_data = ? WHERE id = ? AND profile_data = ?`,
+        [JSON.stringify(data), String(row.id), original]
+      );
+      if (changes !== 1) throw new Error(`Profile changed during re-embedding: ${row.id}`);
+    }
+  }
+
   async createProfile(
     userId: string,
     displayName: string,
