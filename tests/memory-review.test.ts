@@ -117,3 +117,31 @@ describe("review transcript and candidates", () => {
     expect(out[1]!.tags.length).toBe(4);
   });
 });
+
+describe("prompt cache stability (issue #2)", () => {
+  it("memory set signature ignores order and score", async () => {
+    const { memorySetSignature } = await import("../src/services/memory-recall.js");
+    expect(memorySetSignature([{ id: "b" }, { id: "a" }])).toBe(
+      memorySetSignature([{ id: "a" }, { id: "b" }])
+    );
+    expect(memorySetSignature([{ id: "a" }])).not.toBe(
+      memorySetSignature([{ id: "a" }, { id: "b" }])
+    );
+  });
+
+  it("attaches context to the first user message only, keeping later turns intact", async () => {
+    const { attachContextToFirstUserMessage } = await import("../src/v2/adapter.js");
+    const messages: any[] = [
+      { role: "assistant", content: [{ type: "text", text: "x" }] },
+      { role: "user", content: [{ type: "text", text: "first" }] },
+      { role: "user", content: [{ type: "text", text: "second" }] },
+    ];
+    expect(attachContextToFirstUserMessage(messages, "MEM")).toBe(true);
+    expect(messages[1].content[0].text).toBe("MEM");
+    expect(messages[1].content[1].text).toBe("first");
+    expect(messages[2].content).toHaveLength(1);
+    expect(attachContextToFirstUserMessage([{ role: "assistant", content: [] }], "MEM")).toBe(
+      false
+    );
+  });
+});

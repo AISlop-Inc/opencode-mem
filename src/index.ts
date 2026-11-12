@@ -4,7 +4,7 @@ import { tool } from "@opencode-ai/plugin";
 
 import { memoryClient } from "./services/client.js";
 import { formatContextForPrompt } from "./services/context.js";
-import { shouldRefreshRecallOnPrompt } from "./services/memory-recall.js";
+import { memorySetSignature, shouldRefreshRecallOnPrompt } from "./services/memory-recall.js";
 import { MemoryReviewScheduler, runMemoryReview } from "./services/memory-review.js";
 import { buildMemoryProvenanceSuffix } from "./services/memory-provenance.js";
 import { getTags } from "./services/tags.js";
@@ -694,6 +694,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     process.off("exit", exitHandler);
     CHILD_SESSION_LOOKUPS.clear();
     reviewScheduler.clear();
+    renderedContexts.clear();
     await cleanupPlugin();
   };
 
@@ -792,6 +793,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     return true;
   };
 
+  const renderedContexts = new Map<string, { signature: string; text: string }>();
+
   const loadMemoryContext = async (sessionID: string): Promise<string> => {
     const { loadRecallMemoriesForSession } = await import("./services/memory-recall.js");
     const queryText = await userPromptManager.getLatestPromptTextForSession(sessionID);
@@ -812,8 +815,16 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       timing: 0,
     };
 
+    // Same memory set as the last render for this session: reuse the exact
+    // text so scores/order changes alone never move the prompt prefix.
+    const signature = memorySetSignature(memories);
+    const previous = renderedContexts.get(sessionID);
+    if (previous && previous.signature === signature && signature !== "") return previous.text;
+
     const userId = tags.user.userEmail || null;
-    return formatContextForPrompt(userId, projectMemories);
+    const text = await formatContextForPrompt(userId, projectMemories);
+    renderedContexts.set(sessionID, { signature, text });
+    return text;
   };
 
   return {
@@ -827,6 +838,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         CONFIG.autoCaptureEnabled &&
         userPromptManager.hasPendingCaptureSession(sessionID, directory),
       enabled: () => isConfigured() && CONFIG.chatMessage.enabled,
+      injectAs: () => CONFIG.chatMessage.injectAs ?? "system",
       refreshOnPrompt: () =>
         shouldRefreshRecallOnPrompt(
           CONFIG.chatMessage.recall ?? "relevant",

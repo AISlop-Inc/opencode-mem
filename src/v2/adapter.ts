@@ -5,9 +5,32 @@ import { onSkillsChanged, skillsManager } from "../services/skills/skills-manage
 import { getTags } from "../services/tags.js";
 import { eventBelongsToLocation, legacyToolResult, toLegacyEvent } from "./legacy-client.js";
 
+/**
+ * Attach reference text to the first user message of the request. The first
+ * user message is fixed for the life of a conversation, so the request prefix
+ * stays byte-stable across turns (unlike the latest message, which would drop
+ * the block from older turns). Returns false when no user message exists.
+ */
+export function attachContextToFirstUserMessage(messages: any[], text: string): boolean {
+  const index = messages.findIndex((message) => message?.role === "user");
+  if (index < 0) return false;
+  const original = messages[index];
+  const content = Array.isArray(original.content)
+    ? original.content
+    : typeof original.content === "string"
+      ? [{ type: "text", text: original.content }]
+      : [];
+  const next = Object.assign(Object.create(Object.getPrototypeOf(original)), original, {
+    content: [{ type: "text", text }, ...content],
+  });
+  messages[index] = next;
+  return true;
+}
+
 interface MemoryContextHooks {
   ownsPendingCaptureSession?(sessionID: string): Promise<boolean>;
   enabled(): boolean;
+  injectAs?(): "system" | "user";
   refreshOnPrompt(): boolean;
   capturePrompt(
     input: { sessionID: string },
@@ -197,7 +220,17 @@ export async function registerV2Adapter(ctx: Context, legacy: any) {
       }
     }
     const injected = suppressed.has(event.sessionID) ? undefined : contexts.get(event.sessionID);
-    if (injected) event.system.push({ type: "text", text: injected });
+    if (injected) {
+      // "user": keep the system prompt untouched and give memories user-turn
+      // (reference) rank. Fall back to the system prompt when no user message
+      // is present (e.g. non-primary requests).
+      const asUser = memoryContext?.injectAs?.() === "user";
+      const attached =
+        asUser && Array.isArray(event.messages)
+          ? attachContextToFirstUserMessage(event.messages as any[], injected)
+          : false;
+      if (!attached) event.system.push({ type: "text", text: injected });
+    }
 
     if (legacy["chat.params"]) {
       await legacy["chat.params"]({

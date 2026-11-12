@@ -158,6 +158,11 @@
     // compaction / a new session) and reuse it, keeping the prompt prefix cache
     // stable. "live": relevant/both recall re-runs on every user turn.
     "snapshot": "frozen",
+
+    // V2 only. "system" (default) appends the memory context to the system prompt;
+    // "user" attaches it to the first user message so the system prompt never changes
+    // (stable prompt cache) and memories stay reference material, not instructions.
+    "injectAs": "system",
   },
 
   // Opt-in periodic memory review. Every intervalTurns authored user turns, after

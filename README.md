@@ -443,7 +443,13 @@ the user profile to be injected when enabled.
 session and reuses it on later turns (it is rebuilt after compaction and in new sessions),
 so the system-prompt prefix cache stays stable. Set `"live"` to restore the previous
 per-turn relevance refresh (issue #460). When `"frozen"`, `injectOn`/`recall` only affect
-how the snapshot is built.
+how the snapshot is built. In `"live"` mode an unchanged recalled memory set (compared by
+memory ID, ignoring order and score) reuses the previous text verbatim.
+
+`chatMessage.injectAs` (V2, default `"system"`) chooses where the context goes. `"user"`
+attaches it to the first user message of the conversation, so the system prompt never
+changes (system-prompt changes restart some providers' sessions and defeat prefix caching)
+and memories rank as reference material rather than instructions above the user's own.
 
 `memoryReview` (opt-in) runs a Hermes-style background review: every `intervalTurns`
 (default 10) authored user turns of a session, once the reply has finished, an LLM reads
