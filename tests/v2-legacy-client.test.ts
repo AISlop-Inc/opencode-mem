@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createLegacyClient,
   eventBelongsToLocation,
@@ -48,6 +51,97 @@ function createContext(overrides: Record<string, unknown> = {}) {
 }
 
 describe("OpenCode v2 legacy client bridge", () => {
+  it("retains generation measurements after cleanup without prompt or response text", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "memory-ledger-"));
+    const ledger = join(directory, "generation-ledger.jsonl");
+    try {
+      for (const text of ["private output", "秘密"]) {
+        const client = createLegacyClient(
+          createContext({ generate: { text: async () => ({ text }) } }),
+          undefined,
+          ledger
+        );
+        const sessionID = (await client.session.create()).data.id;
+        await client.session.prompt({
+          sessionID,
+          model: { providerID: "anthropic", modelID: "claude" },
+          variant: "low",
+          parts: [{ type: "text", text: "private input" }],
+        });
+        await client.session.delete({ sessionID });
+      }
+      const content = readFileSync(ledger, "utf8");
+      const records = content
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(records).toHaveLength(2);
+      expect(records[0]).toMatchObject({
+        status: "success",
+        model: { providerID: "anthropic", id: "claude", variant: "low" },
+        inputBytes: 13,
+        outputBytes: 14,
+        tokens: null,
+        cost: null,
+        usageStatus: "not_exposed_by_host",
+      });
+      expect(records[1].outputBytes).toBe(6);
+      expect(records[0].requestID).not.toBe(records[1].requestID);
+      expect(records[0].durationMs).toBeGreaterThanOrEqual(0);
+      expect(content).not.toContain("private input");
+      expect(content).not.toContain("private output");
+      expect(content).not.toContain("秘密");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("records failed generations and preserves the original error", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "memory-ledger-"));
+    const ledger = join(directory, "generation-ledger.jsonl");
+    const error = new Error("private provider response");
+    try {
+      const client = createLegacyClient(
+        createContext({
+          generate: {
+            text: async () => {
+              throw error;
+            },
+          },
+        }),
+        undefined,
+        ledger
+      );
+      const sessionID = (await client.session.create()).data.id;
+      await expect(client.session.prompt({ sessionID, parts: [] })).rejects.toBe(error);
+      await client.session.delete({ sessionID });
+      const content = readFileSync(ledger, "utf8");
+      expect(JSON.parse(content)).toMatchObject({
+        status: "error",
+        model: null,
+        outputBytes: null,
+        tokens: null,
+        cost: null,
+      });
+      expect(content).not.toContain(error.message);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps generation working when the ledger cannot be written", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "memory-ledger-"));
+    try {
+      const client = createLegacyClient(createContext(), undefined, directory);
+      const sessionID = (await client.session.create()).data.id;
+      const result = await client.session.prompt({ sessionID, parts: [] });
+      expect(result.data.parts[0].text).toContain('"summary":"done"');
+      await client.session.delete({ sessionID });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("reports providers with active models from the provider directory", async () => {
     // Connectivity comes from ctx.provider.list() (activation auto/enabled);
     // model.list is no longer the source (broker 'opencode' hid real ids).

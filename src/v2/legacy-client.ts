@@ -2,6 +2,7 @@ import type { Context } from "@opencode/plugin/promise/plugin";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { isCaptureEvidenceEvent } from "../services/capture-evidence-events.js";
+import { recordGeneration } from "../services/ai/generation-ledger.js";
 import type { MemToastPayload } from "./toast-rpc.js";
 
 type LegacyPart = { type?: string; text?: string; metadata?: unknown };
@@ -228,7 +229,7 @@ async function showToastViaRpc(
  * Adapts the released OpenCode v2 plugin context to the V1 client shape used
  * by the shared opencode-mem implementation.
  */
-export function createLegacyClient(ctx: Context, toastRpc?: ToastEmitter) {
+export function createLegacyClient(ctx: Context, toastRpc?: ToastEmitter, ledgerPath?: string) {
   const generatedSessions = new Set<string>();
 
   const client = {
@@ -304,10 +305,34 @@ export function createLegacyClient(ctx: Context, toastRpc?: ToastEmitter) {
                     : {}),
                 }
               : undefined;
-          const generated = await ctx.generate.text({
-            prompt: schemaPrompt(body),
-            ...(model ? { model } : {}),
-          });
+          const prompt = schemaPrompt(body);
+          const started = performance.now();
+          const measurement = {
+            requestID: randomUUID(),
+            startedAt: new Date().toISOString(),
+            model: model ?? null,
+            inputBytes: Buffer.byteLength(prompt, "utf8"),
+          };
+          const generated = await ctx.generate.text({ prompt, ...(model ? { model } : {}) }).then(
+            (result) => {
+              recordGeneration(ledgerPath, {
+                ...measurement,
+                durationMs: performance.now() - started,
+                status: "success",
+                outputBytes: Buffer.byteLength(result.text, "utf8"),
+              });
+              return result;
+            },
+            (error: unknown) => {
+              recordGeneration(ledgerPath, {
+                ...measurement,
+                durationMs: performance.now() - started,
+                status: "error",
+                outputBytes: null,
+              });
+              throw error;
+            }
+          );
           const text = generated?.text ?? "";
           const structured = body.format?.type === "json_schema" ? parseJson(text) : undefined;
           return {

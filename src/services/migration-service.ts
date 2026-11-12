@@ -7,6 +7,7 @@ import { embeddingService } from "./embedding.js";
 import { CONFIG } from "../config.js";
 import { log } from "./logger.js";
 import { formatTagsForEmbedding } from "./turso/vector-utils.js";
+import { userProfileManager } from "./user-profile/user-profile-manager.js";
 import type { MemoryRecord, ShardInfo } from "./turso/types.js";
 import {
   acquireTursoOperationLock,
@@ -73,8 +74,12 @@ export class MigrationService {
         const storedDimensions = parseInt(String(metadata.embedding_dimensions || "0"));
         const storedModel = String(metadata.embedding_model || "unknown");
 
-        if (storedDimensions !== CONFIG.embeddingDimensions) {
-          const vectorCount = await tursoVectorSearch.countAllVectors(db);
+        if (
+          storedDimensions !== CONFIG.embeddingDimensions ||
+          storedModel !== CONFIG.embeddingModel
+        ) {
+          const count = await db.get(`SELECT COUNT(*) AS count FROM memories`);
+          const vectorCount = Number(count?.count ?? 0);
           mismatches.push({
             shardId: shard.id,
             dbPath: shard.dbPath,
@@ -209,6 +214,7 @@ export class MigrationService {
     await embeddingService.warmup();
     heartbeat();
     embeddingService.clearCache();
+    await userProfileManager.reembedProfiles(heartbeat);
 
     const totalMemories = mismatch.shardMismatches.reduce(
       (sum, shard) => sum + shard.vectorCount,
@@ -285,7 +291,8 @@ export class MigrationService {
     const memories = await sourceDb.all(`
       SELECT
         id, content, container_tag, tags, type, created_at, updated_at, metadata,
-        display_name, user_name, user_email, project_path, project_name, git_repo_url, is_pinned
+        display_name, user_name, user_email, project_path, project_name, git_repo_url, is_pinned,
+        session_id, deleted_at
       FROM memories
       ORDER BY created_at DESC
     `);
@@ -302,7 +309,11 @@ export class MigrationService {
       // temporary shard; the source is not touched until full verification.
       const batchSize = 50;
       for (let offset = 0; offset < memories.length; offset += batchSize) {
-        const stagedBatch: Array<{ record: MemoryRecord; isPinned: boolean }> = [];
+        const stagedBatch: Array<{
+          record: MemoryRecord;
+          isPinned: boolean;
+          deletedAt: number | null;
+        }> = [];
         for (const memory of memories.slice(offset, offset + batchSize)) {
           const content = String(memory.content);
           const tags = memory.tags
@@ -311,8 +322,8 @@ export class MigrationService {
                 .map((tag) => tag.trim())
                 .filter(Boolean)
             : [];
-          const embeddingInput = tags.length > 0 ? `${content}\nTags: ${tags.join(", ")}` : content;
-          const vector = await embeddingService.embedWithTimeout(embeddingInput, {
+          // Content already includes the capture footer when one was stored.
+          const vector = await embeddingService.embedWithTimeout(content, {
             task: "document",
           });
           const tagsVector =
@@ -343,6 +354,7 @@ export class MigrationService {
               gitRepoUrl: memory.git_repo_url ? String(memory.git_repo_url) : undefined,
             },
             isPinned: Number(memory.is_pinned ?? 0) === 1,
+            deletedAt: memory.deleted_at == null ? null : Number(memory.deleted_at),
           });
           onProcessed(String(memory.id));
         }
@@ -351,12 +363,10 @@ export class MigrationService {
         await stagedDb.transaction("write", async (tx) => {
           for (const item of stagedBatch) {
             await tursoVectorSearch.insertVectorInTransaction(tx, item.record);
-            if (item.isPinned) {
-              await tx.execute({
-                sql: `UPDATE memories SET is_pinned = 1 WHERE id = ?`,
-                args: [item.record.id],
-              });
-            }
+            await tx.execute({
+              sql: `UPDATE memories SET is_pinned = ?, deleted_at = ? WHERE id = ?`,
+              args: [item.isPinned ? 1 : 0, item.deletedAt, item.record.id],
+            });
           }
         });
         heartbeat();

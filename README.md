@@ -1,8 +1,45 @@
+> AISlop-Inc npm package: `@aislop-inc/opencode-mem`.
+> Manual release instructions: [npm publishing](docs/NPM-PUBLISHING.md).
+
 # OpenCode Memory
 
-[![npm version](https://img.shields.io/npm/v/opencode-mem.svg)](https://www.npmjs.com/package/opencode-mem)
-[![npm downloads](https://img.shields.io/npm/dm/opencode-mem.svg)](https://www.npmjs.com/package/opencode-mem)
-[![license](https://img.shields.io/npm/l/opencode-mem.svg)](https://www.npmjs.com/package/opencode-mem)
+**BGE-M3 migration**
+
+An experimental Japanese-memory calibration used the following local settings.
+These are corpus-specific operating points, not universal model defaults.
+
+```jsonc
+{
+  "embeddingModel": "Xenova/bge-m3",
+  "embeddingDimensions": 1024,
+  "embeddingPooling": "cls",
+  "embeddingDtype": "q8",
+  "similarityThreshold": 0.375,
+  "chatMessage": { "maxMemories": 3, "similarityThreshold": 0.41 },
+  "updateOnCaptureSimilarityThreshold": 0.7,
+  "dreaming": { "relatedThreshold": 0.725 },
+}
+```
+
+Back up the store before changing models, then use the Web UI's **re-embed**
+migration rather than a fresh start.
+Migration detects model-name changes even at the same dimension, rebuilds
+content/tag vectors and profile centroids, and preserves session links, pins,
+and trash timestamps.
+After switching models in an already-running host, restart the OpenCode service
+once: the process-wide embedding singleton can otherwise retain the previous
+model across a plugin reload, even when migration detection shows the new model.
+The auto-injection cutoff was evaluated with a three-memory cap and usefulness
+judgments.
+The separate 0.375 explicit-search cutoff used a ten-memory cap and retained
+430/451 retrievable known-source targets in 489 synthetic test queries.
+This is source-target recall, not human usefulness precision, and does not
+validate cross-project search.
+Duplicate detection and profile matching still need separate calibration.
+
+[![npm version](https://img.shields.io/npm/v/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
+[![npm downloads](https://img.shields.io/npm/dm/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
+[![license](https://img.shields.io/npm/l/@aislop-inc/opencode-mem.svg)](https://www.npmjs.com/package/@aislop-inc/opencode-mem)
 [![GitHub stars](https://img.shields.io/github/stars/tickernelz/opencode-mem.svg)](https://github.com/tickernelz/opencode-mem)
 [![Website](https://img.shields.io/badge/website-opencode--mem.zhafron.my.id-blue)](https://opencode-mem.zhafron.my.id)
 [![Docs](https://img.shields.io/badge/docs-opencode--mem.zhafron.my.id%2Fdocs-blue)](https://opencode-mem.zhafron.my.id/docs/)
@@ -121,7 +158,7 @@ For OpenCode v2, add the package to the native `plugins` list:
 
 ```jsonc
 {
-  "plugins": ["opencode-mem@latest"],
+  "plugins": ["@aislop-inc/opencode-mem@latest"],
 }
 ```
 
@@ -137,11 +174,11 @@ For OpenCode v1, add the default entrypoint to your configuration at
 
 ```jsonc
 {
-  "plugin": ["opencode-mem@latest"],
+  "plugin": ["@aislop-inc/opencode-mem@latest"],
 }
 ```
 
-With `@latest` (or a semver range) and `autoUpdate: true` in `opencode-mem.jsonc` (default), the plugin clears OpenCode's cached install when a newer npm release is available and asks you to restart. Pinned versions like `opencode-mem@2.26.0` are never auto-updated.
+With `@latest` (or a semver range) and `autoUpdate: true` in `opencode-mem.jsonc` (default), the plugin clears OpenCode's cached install when a newer npm release is available and asks you to restart. Pinned versions like `@aislop-inc/opencode-mem@2.26.0` are never auto-updated.
 
 ### Automatic memory context on OpenCode v2
 
@@ -229,6 +266,40 @@ Rule of thumb: lasting always-on project instructions → `AGENTS.md`; growing w
 
 The web UI's **Stats** tab (at `/stats`) shows memory-system health at a glance: totals per scope, per-shard memory counts with stale/missing-shard warnings and a same-tag duplication proxy, the active user-profile version, and a 14-day activity series (captures, skipped captures, profile/compaction injections, and errors bucketed by message) parsed from the plugin's own structured logs in `~/.opencode-mem/`. It is read-only — `GET /api/stats` — and degrades per section if a database is unavailable, so it keeps reporting during incidents.
 
+### Native V2 generation ledger
+
+Optional model fallback for internal structured generation can be configured alongside the primary model:
+
+```jsonc
+{
+  "opencodeProvider": "claude-agent-sdk",
+  "opencodeModel": "claude-haiku-5-5",
+  "opencodeFallbackProvider": "inception",
+  "opencodeFallbackModel": "mercury-3",
+  "opencodeFallbackVariant": "high",
+}
+```
+
+The configured primary model is tried first on each request.
+If generation fails (including quota, connection, timeout, or invalid structured output), the fallback is tried once with its own variant.
+This shared path covers auto-capture, profile learning, deduplication, and other internal structured generation.
+The connectivity gate also permits the configured fallback when the primary provider is disconnected.
+Unrelated models and successful primary requests are not redirected.
+If both fail, the fallback error reaches the existing caller retry policy.
+Native V2 ledger rows record each actual model attempt separately.
+
+Native V2 internal generation calls append measurements to `<storagePath>/generation-ledger.jsonl`.
+Each completed or rejected call records a unique request ID, start time, duration, requested model, success/error status, and UTF-8 input/output byte counts.
+Prompts, generated memories, and provider error bodies are not stored.
+These calls use the host's stateless Generate API, so their synthetic session IDs are not durable OpenCode sessions.
+The host currently returns text only: token usage and cost are explicitly `null` with `usageStatus: "not_exposed_by_host"`, not zero or byte-derived estimates.
+Success means the generation request resolved, not that subsequent JSON validation or memory storage succeeded.
+Host-internal retries are not separate ledger rows; process termination can leave an in-flight call unrecorded.
+The ledger is append-only and is not included in the existing Stats UI.
+An unwritable ledger emits a warning without breaking memory capture.
+When Claude SDK explicitly reports that a subscription quota has been exhausted, auto-capture defers the current batch without consuming the prompts' retry budgets.
+Pending prompts remain eligible on a later idle event; ordinary transient failures keep their existing retry behavior.
+
 ### Intelligent prompt-based memory extraction
 
 That phrase in the feature list is **auto-capture**: after a conversation, a background AI request summarizes technical work and saves it as memory. No special prompt from you is required. It uses `opencodeProvider` / `opencodeModel` when set, otherwise the manual `memoryProvider` fallback.
@@ -272,6 +343,8 @@ If you have chatted for a while and still see the message, check that auto-captu
 
 Open `http://127.0.0.1:4747` to browse the memory–prompt timeline, inspect captures, and manage the user profile. The UI has five views: **Project memories** (`/project-memories`), **User profile** (`/user-profile`), **Skill library** (`/skill-library`), **Markdown vault** (`/markdown-vault`) and **Stats** (`/stats`). Change the port with `webServerPort`, or set `webServerEnabled: false` to run without the web UI. If you bind the server beyond loopback, see [Web UI HTTP Basic Auth](#web-ui-http-basic-auth).
 
+The timeline shows each memory and prompt once. If several capture prompts refer to one memory, its current prompt is paired with it when available on the page; earlier prompts remain visible as separate entries.
+
 ## Usage Examples
 
 ```typescript
@@ -314,6 +387,8 @@ Commonly tuned top-level options:
 | `showAutoCaptureToasts` / `showUserProfileToasts` / `showErrorToasts` | `true`                          | Toasts for auto-capture, profile updates and errors.                                                                            |
 | `autoUpdate`                                                          | `true`                          | Clear OpenCode's cached install when a newer npm release is available.                                                          |
 
+Profile context limits are set by `userProfileInjectPreferences` (default `5`), `userProfileInjectPatterns` (`5`), and `userProfileInjectWorkflows` (`3`). These control how many items are injected into the LLM conversation, not how many are displayed in the web UI. The legacy `maxProfileItems`, `userProfileDisplayPreferences`, `userProfileDisplayPatterns`, and `userProfileDisplayWorkflows` options are deprecated and have no effect. Existing config files still load, but you can remove these four keys.
+
 ### Markdown vault backend (`memoryBackend`)
 
 By default memories live only in Turso under `storagePath`. Optionally set a **generic Markdown folder** as the source of truth (Obsidian/Raneto-compatible plain `.md` files — not an Obsidian-specific integration):
@@ -325,6 +400,8 @@ By default memories live only in Turso under `storagePath`. Optionally set a **g
 }
 ```
 
+Plugin-created vault files preserve capture provenance (`promptId`, `sessionID`, and `captureTimestamp`) so reindexing can restore those fields. Legacy files without them retain any corresponding metadata already in the index. Provenance already missing from both the file and the index cannot be recovered automatically.
+
 | Key             | Default      | What it does                                                                                                                                       |
 | --------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `memoryBackend` | `"database"` | `"database"` keeps content in Turso. `"markdown"` uses all `.md` files under `markdownPath` as source of truth.                                    |
@@ -335,7 +412,9 @@ When Markdown mode is on:
 - Plugin-created memories are written as `{id}.md` with YAML frontmatter + body.
 - Existing notes in the folder (any Markdown page style) are imported/indexed; Turso is only a rebuildable semantic-search index.
 - File adds/edits/deletes are watched and re-indexed; the Web UI shows a **Markdown** sidebar page (status, file list, reindex) only in this mode.
-- Switching to Markdown rebuilds the index from the folder — DB-only rows without a matching file are dropped. Export with `memory export` first if you need to keep old database memories.
+- Switching to Markdown rebuilds the index from the folder. DB-only rows without a matching file are dropped only after a readable, complete scan of a nonempty vault. Export with `memory export` first if you need to keep old database memories.
+- Reconciliation skips deletion and warns when the vault is missing, unreadable, only partially scanned or processed, or contains no Markdown files; existing indexed memories are retained. Restore or fix the vault, then reindex. To intentionally remove the final file's indexed memory, explicitly delete that memory through the tool or Web UI.
+- A healthy, nonempty vault still permits permanent deletion of indexed memories whose files are absent. Export or back up first: these safeguards are not a backup and cannot detect an incomplete sync that appears to be a healthy, nonempty vault.
 
 ### Chat message capture and injection (`chatMessage`)
 
@@ -357,6 +436,32 @@ Session and age exclusions are applied before the injected memory limit, so excl
 memories do not consume slots that could hold eligible memories. Setting
 `chatMessage.maxMemories` to `0` disables project-memory injection while still allowing
 the user profile to be injected when enabled.
+
+#### Frozen snapshot and periodic review
+
+`chatMessage.snapshot` (default `"frozen"`) builds the injected memory context once per
+session and reuses it on later turns (it is rebuilt after compaction and in new sessions),
+so the system-prompt prefix cache stays stable. Set `"live"` to restore the previous
+per-turn relevance refresh (issue #460). When `"frozen"`, `injectOn`/`recall` only affect
+how the snapshot is built.
+
+`memoryReview` (opt-in) runs a Hermes-style background review: every `intervalTurns`
+(default 10) authored user turns of a session, once the reply has finished, an LLM reads
+the conversation and saves durable user/project facts, skipping near-duplicates.
+Tool calls, internal capture sessions and child sessions are not counted. The review model
+is set with `memoryReview.opencodeProvider` / `opencodeModel` / `opencodeVariant`; any unset
+field falls back to the top-level `opencodeProvider` / `opencodeModel` / `opencodeVariant`,
+and `opencodeModel: "inherit"` uses the session's model. `maxMemories` (default 5) caps
+writes per review.
+
+```jsonc
+"memoryReview": {
+  "enabled": true,
+  "intervalTurns": 10,
+  "opencodeProvider": "anthropic",
+  "opencodeModel": "claude-haiku-4-5-20251001"
+}
+```
 
 Injected memory tags identify `selection="recent"` or `selection="semantic"`.
 Recent selections (including fallback and recent fill in `both`) have no
@@ -396,13 +501,16 @@ memories. Prefixes stay opt-in by default.
 
 Opt-in background pass that finds **related** memories (via `dreaming.relatedThreshold`,
 default `0.75`, independent of `deduplicationSimilarityThreshold`), asks the configured
-`opencodeProvider` / `opencodeModel` to `merge`, `update`, `supersede`, `keep`, or `flag`
+`opencodeProvider` / `opencodeModel` (with `memoryModel` / `memoryApiUrl` as fallback,
+same channel order as auto-capture) to `merge`, `update`, `supersede`, `keep`, or `flag`
 contradictions, and soft-deletes superseded rows into recoverable trash. Pinned memories
 are never touched. Set `dreaming.crossProject: true` (or `memory.defaultScope:
 "all-projects"`) to group across project tags; user-scope stays separate. Configure under
-`dreaming` in `opencode-mem.jsonc` (`enabled` default `false`). The web UI exposes
-**Trash** (restore) and **Dream** (manual run). Soft-deleted rows are hard-purged after
-`dreaming.trashRetentionDays` during normal cleanup.
+`dreaming` in `opencode-mem.jsonc`. `dreaming.enabled` (default `false`) gates only the
+scheduled background run — the web UI **Dream** button and `POST /api/dreaming/run` still
+work when it is false (manual-only mode). Soft-deleted rows are hard-purged after
+`dreaming.trashRetentionDays` during normal cleanup. The web UI also exposes **Trash**
+(restore).
 
 ### Choosing / configuring embeddings
 
@@ -459,7 +567,7 @@ Example — local bge-m3 (pooling defaults to CLS via preset; override if needed
 
 Changing `embeddingModel`, dimensions, pooling, or task prefixes can require re-embedding stored memories so store and query vectors stay aligned. Prefer picking a model (and pooling/prefix settings) once and sticking with them for a given data directory.
 
-**Unsupported — Intel Mac (`darwin/x64`):** Local persistence requires `@tursodatabase/database`, which does not publish an Intel Mac native binding. Fixed `onnxruntime-node` releases (`1.24.1+`, including the pinned `1.31.1`) also lack darwin/x64. Use an Apple Silicon Mac, Linux, or Windows, or a remote endpoint via `embeddingApiUrl` + `embeddingApiKey` (example above). On supported platforms, `opencode-mem` pins `onnxruntime-node@1.31.1` (Ort::Env teardown fix from `1.24.1` / #225) and loads transformers through a CJS resolve shim so OpenCode nested installs keep that binding. Transformers is resolved to an absolute path before that shim is installed so OpenCode's Bun `--compile` host does not fail with `Cannot find module '@huggingface/transformers' from ''`. After upgrading, clear OpenCode's nested plugin cache (`~/.cache/opencode/packages/opencode-mem@*`) and reinstall.
+**Unsupported — Intel Mac (`darwin/x64`):** Local persistence requires `@tursodatabase/database`, which does not publish an Intel Mac native binding. Fixed `onnxruntime-node` releases (`1.24.1+`, including the pinned `1.31.1`) also lack darwin/x64. Use an Apple Silicon Mac, Linux, or Windows, or a remote endpoint via `embeddingApiUrl` + `embeddingApiKey` (example above). On supported platforms, `opencode-mem` pins `onnxruntime-node@1.31.1` (Ort::Env teardown fix from `1.24.1` / #225) and loads transformers through a CJS resolve shim so OpenCode nested installs keep that binding. Transformers is resolved to an absolute path before that shim is installed so OpenCode's Bun `--compile` host does not fail with `Cannot find module '@huggingface/transformers' from ''`. After upgrading, clear OpenCode's nested plugin cache (`~/.cache/opencode/packages/@aislop-inc/opencode-mem@*`) and reinstall.
 
 ### Memory Scope
 
@@ -792,7 +900,7 @@ MIT License - see LICENSE file
 - **Docs**: https://opencode-mem.zhafron.my.id/docs/
 - **Repository**: https://github.com/tickernelz/opencode-mem
 - **Issues**: https://github.com/tickernelz/opencode-mem/issues
-- **npm**: https://www.npmjs.com/package/opencode-mem
+- **npm**: https://www.npmjs.com/package/@aislop-inc/opencode-mem
 - **OpenCode Platform**: https://opencode.ai
 
 Inspired by [opencode-supermemory](https://github.com/supermemoryai/opencode-supermemory)

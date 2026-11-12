@@ -112,7 +112,19 @@ const _structuredStepCounts = new Map<string, number>();
 const _structuredStepAbortErrors = new Map<string, Error>();
 
 let _connectedProviders: Set<string> = new Set();
+type StructuredOutputFallback = {
+  providerID: string;
+  modelID: string;
+  fallback: { providerID: string; modelID: string; variant?: string };
+};
+let _structuredOutputFallback: StructuredOutputFallback | undefined;
+
+export function setStructuredOutputFallback(config?: StructuredOutputFallback): void {
+  _structuredOutputFallback = config;
+}
+
 let _v2Client: OpencodeClient | undefined;
+const _v2Clients = new Set<OpencodeClient>();
 let _v2BaseUrl: string | undefined;
 let _hostFetch: typeof fetch | undefined;
 let _useSdkTransport = false;
@@ -153,7 +165,11 @@ export function clearConnectedProvidersRefresher(refresher: () => Promise<void>)
  * the same call and never throws (refresh errors are logged by the refresher).
  */
 export async function ensureProviderConnected(providerName: string): Promise<boolean> {
-  if (_connectedProviders.has(providerName)) return true;
+  const available = () =>
+    _connectedProviders.has(providerName) ||
+    (_structuredOutputFallback?.providerID === providerName &&
+      _connectedProviders.has(_structuredOutputFallback.fallback.providerID));
+  if (available()) return true;
   const refresher = _connectedProvidersRefresher;
   if (!refresher) return false;
   try {
@@ -161,16 +177,24 @@ export async function ensureProviderConnected(providerName: string): Promise<boo
   } catch {
     // The refresher logs; a failed refresh keeps the previous set.
   }
-  return _connectedProviders.has(providerName);
+  return available();
 }
 
 export function setV2Client(client: OpencodeClient): void {
   _v2Client = client;
+  _v2Clients.add(client);
   // Native v2 adapters pass a session-capable client without a server URL.
   // Enable the SDK transport path so structured output does not require createV2Client.
   if (hasV2SessionClient(client)) {
     _useSdkTransport = true;
   }
+}
+
+// Each OpenCode location registers a client bound to that location, and this module is shared by all of them.
+// One that closes must hand over to a live client, or later captures run on a closed location.
+export function releaseV2Client(client: OpencodeClient): void {
+  _v2Clients.delete(client);
+  if (_v2Client === client) _v2Client = [..._v2Clients].at(-1);
 }
 
 export function getV2Client(): OpencodeClient | undefined {
@@ -463,6 +487,30 @@ function readRecentOpencodeModel(
  * missing structured/text JSON, timeout, or final Zod validation failure.
  */
 export async function generateStructuredOutput<T>(opts: StructuredOutputOptions<T>): Promise<T> {
+  const fallback = _structuredOutputFallback;
+  try {
+    return await generateStructuredOutputOnce(opts);
+  } catch (error) {
+    if (
+      !fallback ||
+      opts.providerID !== fallback.providerID ||
+      opts.modelID !== fallback.modelID ||
+      (opts.providerID === fallback.fallback.providerID &&
+        opts.modelID === fallback.fallback.modelID &&
+        opts.variant === fallback.fallback.variant)
+    ) {
+      throw error;
+    }
+    // One fallback attempt; callers retain ownership of any later retry policy.
+    return generateStructuredOutputOnce({
+      ...opts,
+      ...fallback.fallback,
+      variant: fallback.fallback.variant,
+    });
+  }
+}
+
+async function generateStructuredOutputOnce<T>(opts: StructuredOutputOptions<T>): Promise<T> {
   const resolved = resolveOpencodeModelRef({
     providerID: opts.providerID,
     modelID: opts.modelID,

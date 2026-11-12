@@ -65,6 +65,7 @@ mock.module(u("services/ai/opencode-provider-loader"), () => ({
     setV2Client: () => {},
     createV2Client: () => ({}),
     setStructuredOutputTimeoutConfig: () => {},
+    setStructuredOutputFallback: () => {},
     setConnectedProvidersRefresher: () => {},
     clearConnectedProvidersRefresher: () => {},
     ensureProviderConnected: async () => true,
