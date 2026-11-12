@@ -36,6 +36,18 @@ export function shouldRefreshRecallOnPrompt(
   return recall === "relevant" || recall === "both";
 }
 
+/**
+ * Order-independent identity of a recalled set. Equal signatures mean the
+ * previously rendered context can be reused verbatim, so a re-ranked or
+ * re-scored but identical set never changes the prompt prefix.
+ */
+export function memorySetSignature(memories: Array<{ id: string }>): string {
+  return memories
+    .map((m) => m.id)
+    .sort()
+    .join("\n");
+}
+
 export function resolveRecallScope(
   recallScope: RecallScopeSetting,
   defaultScope: "project" | "all-projects"

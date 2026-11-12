@@ -243,6 +243,14 @@ interface OpenCodeMemConfig {
      */
     snapshot?: "frozen" | "live";
     /**
+     * Where the V2 adapter puts the memory context.
+     * - system: appended to the system prompt (default, legacy)
+     * - user: attached to the first user message of the conversation, so the
+     *   system prompt never changes and memories rank as reference material,
+     *   not as instructions above the user's own.
+     */
+    injectAs?: "system" | "user";
+    /**
      * How auto-injected memories are selected.
      * - recent: newest pinned/recency listing (legacy)
      * - relevant: vector search against the current user prompt (default)
@@ -458,6 +466,7 @@ const DEFAULTS: Required<
     maxAgeDays: undefined,
     injectOn: "first",
     snapshot: "frozen",
+    injectAs: "system",
     recall: "relevant",
     recallScope: "default",
     similarityThreshold: undefined,
@@ -1574,6 +1583,8 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
         "first" | "always",
       snapshot: (fileConfig.chatMessage?.snapshot === "live" ? "live" : "frozen") as
         "frozen" | "live",
+      injectAs: (fileConfig.chatMessage?.injectAs === "user" ? "user" : "system") as
+        "system" | "user",
       recall: normalizeChatMessageRecall(fileConfig.chatMessage?.recall),
       recallScope: normalizeChatMessageRecallScope(fileConfig.chatMessage?.recallScope),
       similarityThreshold:
