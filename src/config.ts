@@ -133,6 +133,9 @@ interface OpenCodeMemConfig {
    * cheaper/faster/higher variant than the interactive session default.
    */
   opencodeVariant?: string;
+  opencodeFallbackProvider?: string;
+  opencodeFallbackModel?: string;
+  opencodeFallbackVariant?: string;
   /**
    * Timeout in milliseconds for the plugin's internal structured-output LLM
    * calls (auto-capture summaries, profile learning). Profile cleanup keeps
@@ -232,6 +235,14 @@ interface OpenCodeMemConfig {
     maxAgeDays?: number;
     injectOn?: "first" | "always";
     /**
+     * Session memory snapshot behaviour.
+     * - frozen: build the injected memory context once per session (and again
+     *   after compaction / a new session) and reuse the same text, keeping the
+     *   system-prompt prefix cache stable (Hermes-style). Default.
+     * - live: legacy behaviour; relevant/both recall re-runs on every user turn.
+     */
+    snapshot?: "frozen" | "live";
+    /**
      * How auto-injected memories are selected.
      * - recent: newest pinned/recency listing (legacy)
      * - relevant: vector search against the current user prompt (default)
@@ -253,6 +264,27 @@ interface OpenCodeMemConfig {
      * auto-capture / profile learning on the orchestrator's style.
      */
     captureChildSessions?: boolean;
+  };
+  /**
+   * Opt-in periodic memory review (Hermes-style). Every `intervalTurns` authored
+   * user turns of a session, once the reply has finished, a background LLM job
+   * reads the conversation and saves durable facts (deduplicated against
+   * existing memories).
+   */
+  memoryReview?: {
+    enabled?: boolean;
+    /** Authored user turns between reviews. Default 10 (clamped 1..1000). */
+    intervalTurns?: number;
+    /**
+     * Summary/review model. Falls back to the top-level opencodeProvider /
+     * opencodeModel / opencodeVariant when unset. opencodeModel "inherit"
+     * uses the session's current model.
+     */
+    opencodeProvider?: string;
+    opencodeModel?: string;
+    opencodeVariant?: string;
+    /** Max memories one review may write. Default 5 (clamped 1..20). */
+    maxMemories?: number;
   };
   /**
    * Opt-in background memory consolidation ("dreaming"): merge near-duplicate
@@ -296,6 +328,9 @@ const DEFAULTS: Required<
     | "opencodeProvider"
     | "opencodeModel"
     | "opencodeVariant"
+    | "opencodeFallbackProvider"
+    | "opencodeFallbackModel"
+    | "opencodeFallbackVariant"
     | "opencodeTimeoutMs"
     | "autoCaptureLanguage"
     | "userEmailOverride"
@@ -332,6 +367,9 @@ const DEFAULTS: Required<
   opencodeProvider?: string;
   opencodeModel?: string;
   opencodeVariant?: string;
+  opencodeFallbackProvider?: string;
+  opencodeFallbackModel?: string;
+  opencodeFallbackVariant?: string;
   opencodeTimeoutMs?: number;
   autoCaptureLanguage?: string;
   userEmailOverride?: string;
@@ -419,12 +457,18 @@ const DEFAULTS: Required<
     excludeCurrentSession: true,
     maxAgeDays: undefined,
     injectOn: "first",
+    snapshot: "frozen",
     recall: "relevant",
     recallScope: "default",
     similarityThreshold: undefined,
     filterInjectedPrompts: true,
     injectionMarkers: [...getDefaultInjectionMarkers()],
     captureChildSessions: false,
+  },
+  memoryReview: {
+    enabled: false,
+    intervalTurns: 10,
+    maxMemories: 5,
   },
   dreaming: {
     enabled: false,
@@ -444,6 +488,12 @@ function expandPath(path: string): string {
     return homedir();
   }
   return path;
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === "string" && value.trim() ? Number(value) : value;
+  if (typeof n !== "number" || !Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
 }
 
 function normalizeMemoryBackend(value: unknown): "database" | "markdown" {
@@ -627,6 +677,9 @@ const CONFIG_TEMPLATE = `{
    // Optional model reasoning variant for internal LLM calls (e.g. "xhigh");
    // also applies when opencodeModel is "inherit":
    // "opencodeVariant": "xhigh",
+   // "opencodeFallbackProvider": "inception",
+   // "opencodeFallbackModel": "mercury-3",
+   // "opencodeFallbackVariant": "high",
    // Optional timeout in milliseconds for the plugin's internal structured-output LLM calls
    // (auto-capture summaries, profile learning; default 90000, clamped to 10000..600000;
    // invalid values fall back to the default; numeric strings are coerced):
@@ -934,11 +987,29 @@ const CONFIG_TEMPLATE = `{
     // by the parent agent, not by you, so default false means they are not
     // stored, auto-captured, used for profile learning, or given memory
     // context. Enable only if you deliberately want those prompts memorized.
-    "captureChildSessions": false
+    "captureChildSessions": false,
+
+    // "frozen" (default): build the memory context once per session and reuse it
+    // on later turns (stable prompt prefix, Hermes-style). "live": relevant/both
+    // recall re-runs on every user turn.
+    "snapshot": "frozen"
 
     // Extra markers identifying injected blocks. These are ADDED to the
     // built-in list, never replace it.
     // "injectionMarkers": ["<my-plugin-banner>"]
+  },
+
+  // Opt-in periodic memory review: every intervalTurns authored user turns, after
+  // the reply finishes, a background LLM reads the session and saves durable facts.
+  // The summary/review model is set here; unset fields fall back to the top-level
+  // opencodeProvider / opencodeModel / opencodeVariant.
+  "memoryReview": {
+    "enabled": false,
+    "intervalTurns": 10,
+    "maxMemories": 5
+    // "opencodeProvider": "anthropic",
+    // "opencodeModel": "claude-haiku-4-5-20251001", // or "inherit"
+    // "opencodeVariant": "high"
   },
 
   // Opt-in background consolidation: merge/update/supersede related memories
@@ -1391,6 +1462,9 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
     opencodeProvider: fileConfig.opencodeProvider,
     opencodeModel: fileConfig.opencodeModel,
     opencodeVariant: normalizeOpencodeVariant(fileConfig.opencodeVariant),
+    opencodeFallbackProvider: normalizeOpencodeVariant(fileConfig.opencodeFallbackProvider),
+    opencodeFallbackModel: normalizeOpencodeVariant(fileConfig.opencodeFallbackModel),
+    opencodeFallbackVariant: normalizeOpencodeVariant(fileConfig.opencodeFallbackVariant),
     opencodeTimeoutMs: normalizeOpencodeTimeoutMs(fileConfig.opencodeTimeoutMs),
     autoCaptureProviderStatus: getAutoCaptureProviderStatus({
       opencodeProvider: fileConfig.opencodeProvider,
@@ -1498,6 +1572,8 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
       maxAgeDays: fileConfig.chatMessage?.maxAgeDays,
       injectOn: (fileConfig.chatMessage?.injectOn ?? DEFAULTS.chatMessage.injectOn) as
         "first" | "always",
+      snapshot: (fileConfig.chatMessage?.snapshot === "live" ? "live" : "frozen") as
+        "frozen" | "live",
       recall: normalizeChatMessageRecall(fileConfig.chatMessage?.recall),
       recallScope: normalizeChatMessageRecallScope(fileConfig.chatMessage?.recallScope),
       similarityThreshold:
@@ -1510,6 +1586,24 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
       injectionMarkers: normalizeInjectionMarkers(fileConfig.chatMessage?.injectionMarkers),
       captureChildSessions:
         fileConfig.chatMessage?.captureChildSessions ?? DEFAULTS.chatMessage.captureChildSessions,
+    },
+    memoryReview: {
+      enabled: fileConfig.memoryReview?.enabled ?? DEFAULTS.memoryReview.enabled,
+      intervalTurns: clampInt(
+        fileConfig.memoryReview?.intervalTurns,
+        1,
+        1000,
+        DEFAULTS.memoryReview.intervalTurns ?? 10
+      ),
+      maxMemories: clampInt(
+        fileConfig.memoryReview?.maxMemories,
+        1,
+        20,
+        DEFAULTS.memoryReview.maxMemories ?? 5
+      ),
+      opencodeProvider: normalizeOpencodeVariant(fileConfig.memoryReview?.opencodeProvider),
+      opencodeModel: normalizeOpencodeVariant(fileConfig.memoryReview?.opencodeModel),
+      opencodeVariant: normalizeOpencodeVariant(fileConfig.memoryReview?.opencodeVariant),
     },
     dreaming: {
       enabled: fileConfig.dreaming?.enabled ?? DEFAULTS.dreaming.enabled,

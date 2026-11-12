@@ -304,6 +304,27 @@ export class UserPromptManager {
     return text.length > 0 ? text : null;
   }
 
+  /** Saved authored-prompt count and latest recorded model for a session (review restore). */
+  async getSessionPromptStats(
+    sessionId: string
+  ): Promise<{ count: number; providerId: string | null; modelId: string | null }> {
+    const db = await this.ready();
+    const countRow = await db.get(`SELECT COUNT(*) AS n FROM user_prompts WHERE session_id = ?`, [
+      sessionId,
+    ]);
+    const modelRow = await db.get(
+      `SELECT provider_id, model_id FROM user_prompts
+       WHERE session_id = ? AND provider_id IS NOT NULL AND model_id IS NOT NULL
+       ORDER BY created_at DESC LIMIT 1`,
+      [sessionId]
+    );
+    return {
+      count: Number(countRow?.n ?? 0),
+      providerId: modelRow?.provider_id ? String(modelRow.provider_id) : null,
+      modelId: modelRow?.model_id ? String(modelRow.model_id) : null,
+    };
+  }
+
   async getUncapturedPromptsForSession(sessionId: string): Promise<UserPrompt[]> {
     const db = await this.ready();
     const maxRetries = CONFIG.autoCaptureMaxRetries ?? 3;

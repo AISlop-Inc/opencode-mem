@@ -99,8 +99,9 @@ async function runAutoCapture(
   }
 
   const maxRetries = CONFIG.autoCaptureMaxRetries ?? 3;
-  const host = { unavailable: false };
+  const host = { unavailable: false, quotaLimited: false };
   for (const prompt of prompts) {
+    if (host.quotaLimited) break;
     if (
       prompt.projectPath &&
       prompt.projectPath.replace(/\\/g, "/") !== directory.replace(/\\/g, "/")
@@ -138,7 +139,7 @@ async function capturePrompt(
   directory: string,
   prompt: UserPrompt,
   maxRetries: number,
-  host: { unavailable: boolean },
+  host: { unavailable: boolean; quotaLimited: boolean },
   preferSavedEvidence = false
 ): Promise<void> {
   let claimedPromptId: string | null = null;
@@ -348,6 +349,23 @@ async function capturePrompt(
           throw new Error(`Memory persistence failed: ${result.error || "database write failed"}`);
         }
       } catch (error) {
+        if (
+          phase === "summary" &&
+          error instanceof Error &&
+          error.message.includes("Claude SDK: rate_limit: You've hit your")
+        ) {
+          // A subscription quota cannot recover in the two-second retry window.
+          // Preserve retry eligibility and let a later idle attempt the batch.
+          host.quotaLimited = true;
+          log("Auto-capture deferred: provider quota exhausted; prompt retained", {
+            phase,
+            outcome: "deferred",
+            reason: "provider_quota_exhausted",
+            promptId: prompt.id,
+            sessionID,
+          });
+          return;
+        }
         await userPromptManager.recordFailedAttempt(prompt.id);
 
         if (attempt < maxRetries) {

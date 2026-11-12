@@ -108,7 +108,11 @@ mock.module(u("services/ai/opencode-provider-loader"), () => ({
     getV2Client: () => ({}),
     generateStructuredOutput: async () => {
       counters.summary++;
-      if (scenario.phase === "summary") throw missing();
+      if (scenario.quota && !scenario.quotaRecovered)
+        throw new Error(
+          "Claude SDK: rate_limit: You've hit your 5-hour limit · resets 6:40pm (Asia/Tokyo)"
+        );
+      if (scenario.phase === "summary" && !scenario.quota) throw missing();
       return { type: "discussion", summary: "Fixed verified bug", tags: [] };
     },
   }),
@@ -167,6 +171,7 @@ const first = JSON.parse(JSON.stringify({ counters, prompts, logs }));
 if (scenario.recover) {
   await performAutoCapture(ctx, "session", "/synthetic-project");
   available = true;
+  scenario.quotaRecovered = true;
   await performAutoCapture(ctx, "session", "/synthetic-project");
   await performAutoCapture(ctx, "session", "/synthetic-project");
 }

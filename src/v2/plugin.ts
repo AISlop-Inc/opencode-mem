@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin/promise/plugin";
+import { join } from "node:path";
 import { OpenCodeMemPlugin } from "../index.js";
 import { CONFIG } from "../config.js";
 import { loadOpencodeProvider } from "../services/ai/opencode-provider-loader.js";
@@ -11,7 +12,11 @@ const OpenCodeMemPluginV2: Plugin = {
   async setup(ctx) {
     // Server Context has no ui.toast; bridge toast intents to the ./tui companion.
     const toastRpc = await ctx.rpc.register(MemToast, {});
-    const legacyClient = createLegacyClient(ctx, toastRpc);
+    const legacyClient = createLegacyClient(
+      ctx,
+      toastRpc,
+      join(CONFIG.storagePath, "generation-ledger.jsonl")
+    );
     const legacy = (await OpenCodeMemPlugin({
       client: legacyClient,
       directory: ctx.location.directory,

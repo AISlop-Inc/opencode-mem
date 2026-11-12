@@ -153,6 +153,24 @@
     // Extra markers identifying injected blocks. These are ADDED to the
     // built-in list, never replace it.
     // "injectionMarkers": ["<my-plugin-banner>"],
+
+    // "frozen" (default): build the memory context once per session (rebuilt on
+    // compaction / a new session) and reuse it, keeping the prompt prefix cache
+    // stable. "live": relevant/both recall re-runs on every user turn.
+    "snapshot": "frozen",
+  },
+
+  // Opt-in periodic memory review. Every intervalTurns authored user turns, after
+  // the reply finishes, a background LLM reads the session and saves durable facts
+  // (skipping near-duplicates). Choose the summary/review model here; unset fields
+  // fall back to the top-level opencodeProvider / opencodeModel / opencodeVariant.
+  "memoryReview": {
+    "enabled": false,
+    "intervalTurns": 10,
+    "maxMemories": 5,
+    // "opencodeProvider": "anthropic",
+    // "opencodeModel": "claude-haiku-4-5-20251001", // or "inherit"
+    // "opencodeVariant": "high",
   },
 
   // Opt-in background consolidation ("dreaming"): merge/update/supersede related
@@ -192,6 +210,10 @@
   // Optional model reasoning variant for internal LLM calls (e.g. "xhigh");
   // also applies when opencodeModel is "inherit":
   // "opencodeVariant": "xhigh",
+  // Optional one-attempt fallback when the configured primary model fails.
+  // "opencodeFallbackProvider": "inception",
+  // "opencodeFallbackModel": "mercury-3",
+  // "opencodeFallbackVariant": "high",
   // Optional timeout (ms) for the plugin's internal structured-output LLM calls
   // (auto-capture summaries, profile learning; default 90000, clamped to 10000..600000;
   // invalid values fall back to the default; numeric strings are coerced):

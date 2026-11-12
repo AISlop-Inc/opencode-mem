@@ -12,6 +12,42 @@ function run(scenario: Record<string, unknown> = {}) {
 }
 
 describe("auto-capture missing session context", () => {
+  it("defers a quota-blocked batch without consuming attempts and captures it after recovery", () => {
+    const result = run({
+      quota: true,
+      phase: "summary",
+      batch: true,
+      recover: true,
+      priorAttempts: 2,
+    });
+    expect(result.first.counters).toMatchObject({
+      summary: 1,
+      persist: 0,
+      failed: 0,
+      released: 1,
+      deleted: 0,
+      delays: [],
+    });
+    expect(result.first.prompts.map((p: any) => [p.captured, p.capture_attempts])).toEqual([
+      [0, 2],
+      [0, 2],
+    ]);
+    expect(
+      result.first.logs.some((entry: any) => entry.reason === "provider_quota_exhausted")
+    ).toBe(true);
+    expect(result.counters).toMatchObject({
+      summary: 4,
+      persist: 2,
+      failed: 0,
+      deleted: 0,
+      delays: [],
+    });
+    expect(result.prompts.map((p: any) => [p.captured, p.capture_attempts])).toEqual([
+      [1, 2],
+      [1, 2],
+    ]);
+  });
+
   for (const scenario of [{}, { tagged: true }, { response: true, tagged: true }]) {
     it(`defers a positively identified missing session without spending retries: ${JSON.stringify(scenario)}`, () => {
       const result = run({ ...scenario, batch: true, priorAttempts: 1 });

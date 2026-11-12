@@ -5,6 +5,7 @@ import { tool } from "@opencode-ai/plugin";
 import { memoryClient } from "./services/client.js";
 import { formatContextForPrompt } from "./services/context.js";
 import { shouldRefreshRecallOnPrompt } from "./services/memory-recall.js";
+import { MemoryReviewScheduler, runMemoryReview } from "./services/memory-review.js";
 import { buildMemoryProvenanceSuffix } from "./services/memory-provenance.js";
 import { getTags } from "./services/tags.js";
 import { stripPrivateContent, isFullyPrivate, sanitizeMemoryContent } from "./services/privacy.js";
@@ -334,12 +335,29 @@ export async function configureOpencodeHostTransport(ctx: {
     setHostFetch,
     setV2Client,
     setStructuredOutputTimeoutConfig,
+    setStructuredOutputFallback,
   } = await loadOpencodeProvider();
   resetHostFetch();
   // Configured structured-output timeout (opencodeTimeoutMs): injected here so
   // the lazily-bundled provider module never imports config.js (whose import
   // side effects would leak into subprocess gates and loader bundles).
   setStructuredOutputTimeoutConfig(CONFIG.opencodeTimeoutMs);
+  setStructuredOutputFallback(
+    CONFIG.opencodeProvider &&
+      CONFIG.opencodeModel &&
+      CONFIG.opencodeFallbackProvider &&
+      CONFIG.opencodeFallbackModel
+      ? {
+          providerID: CONFIG.opencodeProvider,
+          modelID: CONFIG.opencodeModel,
+          fallback: {
+            providerID: CONFIG.opencodeFallbackProvider,
+            modelID: CONFIG.opencodeFallbackModel,
+            variant: CONFIG.opencodeFallbackVariant,
+          },
+        }
+      : undefined
+  );
   const hostConfig = getHostClientConfig(ctx);
   if (hostConfig.fetch) {
     setHostFetch(hostConfig.fetch);
@@ -675,10 +693,59 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     process.off("beforeExit", beforeExitHandler);
     process.off("exit", exitHandler);
     CHILD_SESSION_LOOKUPS.clear();
+    reviewScheduler.clear();
     await cleanupPlugin();
   };
 
   void resumePendingCaptures();
+
+  // Hermes-style periodic review: counts authored user turns per session and
+  // runs one background review after the reply of every Nth turn completes.
+  const reviewScheduler = new MemoryReviewScheduler();
+  const reviewEnabled = () => !cleanedUp && isConfigured() && CONFIG.memoryReview?.enabled === true;
+
+  const noteReviewTurn = async (sessionID: string, messageID: string) => {
+    if (!reviewEnabled()) return;
+    try {
+      if (!reviewScheduler.has(sessionID)) {
+        // After a host/plugin restart, resume the count from saved prompts
+        // (this prompt is already saved, so exclude it before noting it).
+        const stats = await userPromptManager.getSessionPromptStats(sessionID);
+        reviewScheduler.restore(
+          sessionID,
+          Math.max(0, stats.count - 1),
+          CONFIG.memoryReview?.intervalTurns ?? 10
+        );
+      }
+      reviewScheduler.noteTurn(sessionID, messageID);
+    } catch (error) {
+      log("memory review: turn count failed", { error: String(error) });
+    }
+  };
+
+  const runReviewIfDue = async (sessionID: string) => {
+    if (!reviewEnabled() || !reviewScheduler.has(sessionID)) return;
+    // Internal structured-output sessions and (by default) child sessions never
+    // reach noteReviewTurn, so they are never counted or reviewed.
+    try {
+      await reviewScheduler.maybeRun(
+        sessionID,
+        CONFIG.memoryReview?.intervalTurns ?? 10,
+        async () => {
+          const stats = await userPromptManager.getSessionPromptStats(sessionID);
+          const written = await runMemoryReview({
+            ctx,
+            sessionID,
+            directory,
+            sessionModel: { providerID: stats.providerId, modelID: stats.modelId },
+          });
+          log("memory review finished", { sessionID, written });
+        }
+      );
+    } catch (error) {
+      log("memory review failed", { sessionID, error: String(error) });
+    }
+  };
 
   // Capture remains tied to authored prompts. V2 can rebuild request context
   // independently when its in-memory session cache is lost on host/plugin reload.
@@ -721,6 +788,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     }
 
     await userPromptManager.savePrompt(sessionID, messageID, directory, userMessage);
+    await noteReviewTurn(sessionID, messageID);
     return true;
   };
 
@@ -762,7 +830,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       refreshOnPrompt: () =>
         shouldRefreshRecallOnPrompt(
           CONFIG.chatMessage.recall ?? "relevant",
-          CONFIG.chatMessage.injectOn ?? "first"
+          CONFIG.chatMessage.injectOn ?? "first",
+          CONFIG.chatMessage.snapshot ?? "live"
         ),
       capturePrompt: async (
         input: { sessionID: string },
@@ -814,7 +883,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         const shouldInject =
           shouldRefreshRecallOnPrompt(
             CONFIG.chatMessage.recall ?? "relevant",
-            CONFIG.chatMessage.injectOn ?? "first"
+            CONFIG.chatMessage.injectOn ?? "first",
+            CONFIG.chatMessage.snapshot ?? "live"
           ) ||
           !hasNonSyntheticUserMessages ||
           (isAfterCompaction &&
@@ -1318,6 +1388,15 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       }
 
       if (event.type === "session.idle") {
+        const idleSessionID = event.properties?.sessionID;
+        if (typeof idleSessionID === "string" && reviewEnabled()) {
+          // Reply finished: run the due review off the event path so it never
+          // delays the user or the auto-capture debounce below.
+          void (async () => {
+            if (await isInternalCaptureSession(ctx.client, idleSessionID)) return;
+            await runReviewIfDue(idleSessionID);
+          })();
+        }
         if (!isConfigured() || !CONFIG.autoCaptureEnabled) return;
         if (cleanedUp) return;
         const sessionID = event.properties?.sessionID;

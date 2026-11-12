@@ -266,6 +266,40 @@ Rule of thumb: lasting always-on project instructions → `AGENTS.md`; growing w
 
 The web UI's **Stats** tab (at `/stats`) shows memory-system health at a glance: totals per scope, per-shard memory counts with stale/missing-shard warnings and a same-tag duplication proxy, the active user-profile version, and a 14-day activity series (captures, skipped captures, profile/compaction injections, and errors bucketed by message) parsed from the plugin's own structured logs in `~/.opencode-mem/`. It is read-only — `GET /api/stats` — and degrades per section if a database is unavailable, so it keeps reporting during incidents.
 
+### Native V2 generation ledger
+
+Optional model fallback for internal structured generation can be configured alongside the primary model:
+
+```jsonc
+{
+  "opencodeProvider": "claude-agent-sdk",
+  "opencodeModel": "claude-haiku-5-5",
+  "opencodeFallbackProvider": "inception",
+  "opencodeFallbackModel": "mercury-3",
+  "opencodeFallbackVariant": "high",
+}
+```
+
+The configured primary model is tried first on each request.
+If generation fails (including quota, connection, timeout, or invalid structured output), the fallback is tried once with its own variant.
+This shared path covers auto-capture, profile learning, deduplication, and other internal structured generation.
+The connectivity gate also permits the configured fallback when the primary provider is disconnected.
+Unrelated models and successful primary requests are not redirected.
+If both fail, the fallback error reaches the existing caller retry policy.
+Native V2 ledger rows record each actual model attempt separately.
+
+Native V2 internal generation calls append measurements to `<storagePath>/generation-ledger.jsonl`.
+Each completed or rejected call records a unique request ID, start time, duration, requested model, success/error status, and UTF-8 input/output byte counts.
+Prompts, generated memories, and provider error bodies are not stored.
+These calls use the host's stateless Generate API, so their synthetic session IDs are not durable OpenCode sessions.
+The host currently returns text only: token usage and cost are explicitly `null` with `usageStatus: "not_exposed_by_host"`, not zero or byte-derived estimates.
+Success means the generation request resolved, not that subsequent JSON validation or memory storage succeeded.
+Host-internal retries are not separate ledger rows; process termination can leave an in-flight call unrecorded.
+The ledger is append-only and is not included in the existing Stats UI.
+An unwritable ledger emits a warning without breaking memory capture.
+When Claude SDK explicitly reports that a subscription quota has been exhausted, auto-capture defers the current batch without consuming the prompts' retry budgets.
+Pending prompts remain eligible on a later idle event; ordinary transient failures keep their existing retry behavior.
+
 ### Intelligent prompt-based memory extraction
 
 That phrase in the feature list is **auto-capture**: after a conversation, a background AI request summarizes technical work and saves it as memory. No special prompt from you is required. It uses `opencodeProvider` / `opencodeModel` when set, otherwise the manual `memoryProvider` fallback.
@@ -402,6 +436,32 @@ Session and age exclusions are applied before the injected memory limit, so excl
 memories do not consume slots that could hold eligible memories. Setting
 `chatMessage.maxMemories` to `0` disables project-memory injection while still allowing
 the user profile to be injected when enabled.
+
+#### Frozen snapshot and periodic review
+
+`chatMessage.snapshot` (default `"frozen"`) builds the injected memory context once per
+session and reuses it on later turns (it is rebuilt after compaction and in new sessions),
+so the system-prompt prefix cache stays stable. Set `"live"` to restore the previous
+per-turn relevance refresh (issue #460). When `"frozen"`, `injectOn`/`recall` only affect
+how the snapshot is built.
+
+`memoryReview` (opt-in) runs a Hermes-style background review: every `intervalTurns`
+(default 10) authored user turns of a session, once the reply has finished, an LLM reads
+the conversation and saves durable user/project facts, skipping near-duplicates.
+Tool calls, internal capture sessions and child sessions are not counted. The review model
+is set with `memoryReview.opencodeProvider` / `opencodeModel` / `opencodeVariant`; any unset
+field falls back to the top-level `opencodeProvider` / `opencodeModel` / `opencodeVariant`,
+and `opencodeModel: "inherit"` uses the session's model. `maxMemories` (default 5) caps
+writes per review.
+
+```jsonc
+"memoryReview": {
+  "enabled": true,
+  "intervalTurns": 10,
+  "opencodeProvider": "anthropic",
+  "opencodeModel": "claude-haiku-4-5-20251001"
+}
+```
 
 Injected memory tags identify `selection="recent"` or `selection="semantic"`.
 Recent selections (including fallback and recent fill in `both`) have no

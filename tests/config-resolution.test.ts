@@ -35,6 +35,23 @@ describe("project-scoped config resolution", () => {
     expect(CONFIG.opencodeModel).toBe("global-model");
   });
 
+  it("loads and normalizes the optional structured-output fallback", () => {
+    existsSpy = spyOn(fs, "existsSync").mockImplementation((p) =>
+      normalizePath(p).includes(".config/opencode/opencode-mem")
+    );
+    readSpy = spyOn(fs, "readFileSync").mockReturnValue(
+      JSON.stringify({
+        opencodeFallbackProvider: " inception ",
+        opencodeFallbackModel: " mercury-3 ",
+        opencodeFallbackVariant: " high ",
+      })
+    );
+    initConfig("/some/project");
+    expect(CONFIG.opencodeFallbackProvider).toBe("inception");
+    expect(CONFIG.opencodeFallbackModel).toBe("mercury-3");
+    expect(CONFIG.opencodeFallbackVariant).toBe("high");
+  });
+
   it("project config overrides global config", () => {
     existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
     readSpy = spyOn(fs, "readFileSync").mockImplementation((p) => {

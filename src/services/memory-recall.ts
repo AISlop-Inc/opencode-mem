@@ -26,8 +26,12 @@ export const PROJECT_BOOST = 0.05;
  */
 export function shouldRefreshRecallOnPrompt(
   recall: RecallMode,
-  injectOn: "first" | "always"
+  injectOn: "first" | "always",
+  snapshot: "frozen" | "live" = "live"
 ): boolean {
+  // Frozen snapshot: the session context is built once and reused; only
+  // compaction or a new session rebuilds it.
+  if (snapshot === "frozen") return false;
   if (injectOn === "always") return true;
   return recall === "relevant" || recall === "both";
 }
