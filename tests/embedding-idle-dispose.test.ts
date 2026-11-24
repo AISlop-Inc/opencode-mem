@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, jest } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,20 +17,25 @@ afterAll(() => {
   process.env.USERPROFILE = originalUserProfile;
 });
 
+afterEach(() => jest.useRealTimers());
+
 function makeService(): { service: any; disposed: string[] } {
   const disposed: string[] = [];
   const service = new EmbeddingService();
-  service.pipe = Object.assign(async () => ({ data: new Float32Array([1, 2, 3]) }), {
-    dispose: async () => {
+  service.local = {
+    run: async () => ({ type: "vector", vector: new Float32Array([1, 2, 3]) }),
+    close: async () => {
       disposed.push("dispose");
     },
-  });
+  };
   service.isWarmedUp = true;
   return { service, disposed };
 }
 
 async function withIdleTimeout(ms: number, run: () => Promise<void>): Promise<void> {
   const previous = CONFIG.embeddingIdleTimeoutMs;
+  const previousUrl = CONFIG.embeddingApiUrl;
+  const previousKey = CONFIG.embeddingApiKey;
   CONFIG.embeddingIdleTimeoutMs = ms;
   CONFIG.embeddingApiUrl = undefined;
   CONFIG.embeddingApiKey = undefined;
@@ -38,30 +43,34 @@ async function withIdleTimeout(ms: number, run: () => Promise<void>): Promise<vo
     await run();
   } finally {
     CONFIG.embeddingIdleTimeoutMs = previous;
+    CONFIG.embeddingApiUrl = previousUrl;
+    CONFIG.embeddingApiKey = previousKey;
   }
 }
 
 describe("EmbeddingService idle release", () => {
   it("disposes the local pipeline after the idle timeout", async () => {
     await withIdleTimeout(20, async () => {
+      jest.useFakeTimers();
       const { service, disposed } = makeService();
       await service.embed("hello");
       expect(disposed).toEqual([]);
 
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      jest.advanceTimersByTime(20);
 
       expect(disposed).toEqual(["dispose"]);
       expect(service.isWarmedUp).toBe(false);
-      expect(service.pipe).toBeNull();
+      expect(service.local).toBeNull();
     });
   });
 
   it("keeps the model loaded when the timeout is 0", async () => {
     await withIdleTimeout(0, async () => {
+      jest.useFakeTimers();
       const { service, disposed } = makeService();
       await service.embed("hello");
 
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      jest.advanceTimersByTime(80);
 
       expect(disposed).toEqual([]);
       expect(service.isWarmedUp).toBe(true);
@@ -75,16 +84,15 @@ describe("EmbeddingService idle release", () => {
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
-      service.pipe = Object.assign(
-        async () => {
+      service.local = {
+        run: async () => {
           await gate;
-          return { data: new Float32Array([1]) };
+          return { type: "vector", vector: new Float32Array([1]) };
         },
-        { dispose: async () => disposed.push("dispose") }
-      );
+        close: async () => disposed.push("dispose"),
+      };
 
       const running = service.embed("in-flight");
-      await new Promise((resolve) => setTimeout(resolve, 10));
       await service.dispose("client-close");
 
       // The running embed still holds the pipeline, so nothing is released yet.
@@ -92,12 +100,11 @@ describe("EmbeddingService idle release", () => {
 
       release();
       await running;
-      await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Release happens without a second dispose() call, even with the timer off.
       expect(disposed).toEqual(["dispose"]);
       expect(service.isWarmedUp).toBe(false);
-      expect(service.pipe).toBeNull();
+      expect(service.local).toBeNull();
     });
   });
 });

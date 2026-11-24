@@ -2,19 +2,12 @@ import { CONFIG } from "../config.js";
 import { log, safeLog } from "./logger.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  formatOnnxruntimeInitError,
-  prepareOnnxruntimeForTransformers,
-} from "./onnxruntime-resolve.js";
-import { createRuntimeRequire } from "./runtime-require.js";
-import {
-  getTransformersPackageSpecifier,
-  resolveTransformersCjsEntry,
-} from "./transformers-resolve.js";
-
-const requireFromHere = createRuntimeRequire(import.meta);
+import type { ProgressInfo } from "@huggingface/transformers";
+import { loadEmbeddingBackend } from "./embedding-backend.js";
+import { startEmbeddingProcess } from "./embedding-process.js";
 
 const TIMEOUT_MS = 30000;
+const LOCAL_WARMUP_TIMEOUT_MS = 600000; // Includes the first model download.
 const GLOBAL_EMBEDDING_KEY = Symbol.for("opencode-mem.embedding.instance");
 const MAX_CACHE_SIZE = 100;
 /**
@@ -191,64 +184,19 @@ function embeddingCacheFingerprint(): string {
   ].join("\0");
 }
 
-type HfTransformers = typeof import("@huggingface/transformers");
-
-let _transformers: {
-  pipeline: HfTransformers["pipeline"];
-  env: HfTransformers["env"];
-} | null = null;
-
-async function ensureTransformersLoaded(): Promise<NonNullable<typeof _transformers>> {
-  if (_transformers !== null) return _transformers;
-  // Pin onnxruntime-node (+ common) to our direct 1.31.1 stack before transformers
-  // resolves them (#184 / #210 / #225 / #463). Load the CJS export so Module._resolveFilename
-  // shim applies — the ESM entry's static import bypasses it under OpenCode nested installs.
-  //
-  // Critical ordering for OpenCode's Bun --compile host (#210 follow-up):
-  // resolve the transformers absolute path BEFORE installOnnxruntimeResolveShim().
-  // After the shim is installed, non-onnx Module._resolveFilename fallbacks fail with
-  // `Cannot find module '@huggingface/transformers' from ''` even though the package
-  // exists. Loading via the pre-resolved absolute path keeps the onnx pin shim active
-  // for transformers' nested requires without needing a post-shim package resolve.
-  //
-  // #463: OpenCode nested npm/Bun cache layouts can make createRequire(packageName)
-  // fail even when the package is on disk — fall back to Bun.resolveSync + node_modules walk.
-  const transformersSpecifier = getTransformersPackageSpecifier();
-  const meta = import.meta as ImportMeta & { path?: string; dirname?: string; dir?: string };
-  const transformersEntry = resolveTransformersCjsEntry({
-    requireFn: requireFromHere,
-    specifier: transformersSpecifier,
-    startPaths: [meta.url, meta.path, meta.dirname, meta.dir, process.cwd()],
-  });
-
-  prepareOnnxruntimeForTransformers();
-  const mod = requireFromHere(transformersEntry) as HfTransformers;
-  mod.env.allowLocalModels = true;
-  mod.env.allowRemoteModels = true;
-  mod.env.cacheDir = join(CONFIG.storagePath, ".cache");
-  // Keep ONNX WASM single-threaded for Bun/Node runtimes without SharedArrayBuffer.
-  try {
-    (mod.env as any).backends.onnx.wasm.numThreads = 1;
-  } catch (e) {
-    log("Failed to set wasm.numThreads", { error: String(e) });
-  }
-  _transformers = mod;
-  return _transformers!;
+/** Exercise the production backend loader from nested-install fixtures (#210). */
+export async function loadLocalTransformersBackend() {
+  return loadEmbeddingBackend(join(CONFIG.storagePath, ".cache"));
 }
 
-/**
- * Production transformers load path used by nested OpenCode install fixtures (#210).
- * Prefer this over a separately anchored createRequire() so empty-referrer hosts are covered.
- */
-export async function loadLocalTransformersBackend(): Promise<NonNullable<typeof _transformers>> {
-  return ensureTransformersLoaded();
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)),
-  ]);
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /** Remote embedding call failed with an HTTP status. */
@@ -343,7 +291,7 @@ export async function fetchRemoteEmbeddingWithRetry(
 }
 
 export class EmbeddingService {
-  private pipe: any = null;
+  private local: ReturnType<typeof startEmbeddingProcess> | null = null;
   private initPromise: Promise<void> | null = null;
   public isWarmedUp: boolean = false;
   /** Set when warmup fails permanently; prevents "initializing forever" (#184). */
@@ -352,9 +300,9 @@ export class EmbeddingService {
   private cachedFingerprint: string | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = 0;
-  /** Release requested while an embed held the pipeline; runs when it drains. */
+  /** Release requested while an embed held the process; runs when it drains. */
   private pendingDispose: string | null = null;
-  /** Bumped by dispose so a slow initialize cannot resurrect a released pipeline. */
+  /** Bumped by dispose so a slow initialize cannot restore readiness. */
   private generation = 0;
 
   static getInstance(): EmbeddingService {
@@ -373,7 +321,7 @@ export class EmbeddingService {
 
   private scheduleIdleDispose(): void {
     this.clearIdleTimer();
-    // Remote embeddings hold no model in-process, so there is nothing to release.
+    // Remote embeddings have no local model to release.
     if ((CONFIG.embeddingApiUrl && CONFIG.embeddingApiKey) || !this.isWarmedUp) return;
     const ms = CONFIG.embeddingIdleTimeoutMs;
     if (!(ms > 0)) return;
@@ -384,32 +332,32 @@ export class EmbeddingService {
     (this.idleTimer as any).unref?.();
   }
 
-  /** Drop the local pipeline so its weights can be reclaimed; the next embed() re-warms it. */
+  /** Stop the child so its weights can be reclaimed; the next embed() re-warms it. */
   async dispose(reason: string = "dispose"): Promise<void> {
     this.clearIdleTimer();
     if (this.inFlight > 0) {
-      // A running embed still holds the pipeline; release once it drains.
+      // A running embed still holds the process; release once it drains.
       this.pendingDispose = reason;
       return;
     }
     this.generation++;
-    const pipe = this.pipe;
-    this.pipe = null;
+    const local = this.local;
+    this.local = null;
     this.isWarmedUp = false;
     this.initPromise = null;
     this.initError = null;
-    if (pipe?.dispose) {
+    if (local) {
       try {
-        await pipe.dispose();
+        await local.close();
       } catch (error) {
-        safeLog("Failed to dispose embedding pipeline", { error: String(error) });
+        safeLog("Failed to stop local embedding process", { error: String(error) });
       }
     }
     // Teardown path: a logger failure must not escape the idle timer or close().
     safeLog("Embedding model released", { reason, model: CONFIG.embeddingModel });
   }
 
-  async warmup(progressCallback?: (progress: any) => void): Promise<void> {
+  async warmup(progressCallback?: (progress: ProgressInfo) => void): Promise<void> {
     if (this.isWarmedUp) return;
     if (this.initError) throw new Error(this.initError);
     if (this.initPromise) return this.initPromise;
@@ -417,7 +365,10 @@ export class EmbeddingService {
     return this.initPromise;
   }
 
-  private async initializeModel(progressCallback?: (progress: any) => void): Promise<void> {
+  private async initializeModel(
+    progressCallback?: (progress: ProgressInfo) => void
+  ): Promise<void> {
+    const generation = this.generation;
     try {
       if (CONFIG.embeddingApiUrl && CONFIG.embeddingApiKey) {
         // Send a probe request to verify the API endpoint is actually reachable.
@@ -425,51 +376,56 @@ export class EmbeddingService {
         // Retried on transient failure (#400): a single hung probe previously
         // burned the whole 30s budget and set the sticky initError.
         await fetchRemoteEmbeddingWithRetry(fetch, "ping");
+        if (generation !== this.generation) return;
         this.isWarmedUp = true;
         this.initError = null;
         return;
       }
 
       // Local model path
-      const generation = this.generation;
-      const { pipeline } = await ensureTransformersLoaded();
-      // Explicit config wins; otherwise auto-resolve from model declaration / cache (#393).
-      const dtype = CONFIG.embeddingDtype ?? resolveLocalOnnxDtype(CONFIG.embeddingModel);
-      if (dtype) {
-        log("Resolved local ONNX dtype for embedding warmup", {
-          model: CONFIG.embeddingModel,
-          dtype,
-          source: CONFIG.embeddingDtype ? "config" : "auto",
-        });
-      }
-      const pipe = await pipeline("feature-extraction", CONFIG.embeddingModel, {
-        ...(dtype ? { dtype } : {}),
-        progress_callback: progressCallback,
+      const model = CONFIG.embeddingModel;
+      const cacheDir = join(CONFIG.storagePath, ".cache");
+      const dtype = CONFIG.embeddingDtype ?? resolveLocalOnnxDtype(model, cacheDir);
+      const entrypoint = new URL(
+        import.meta.url.endsWith(".ts") ? "./embedding-child.ts" : "./embedding-child.js",
+        import.meta.url
+      );
+      const local = startEmbeddingProcess(entrypoint, () => {
+        if (this.local !== local) return;
+        this.local = null;
+        this.isWarmedUp = false;
+        this.initPromise = null;
+        this.clearIdleTimer();
       });
-      if (generation !== this.generation) {
-        // dispose() ran while the model was loading; keep nothing resident.
-        await (pipe as any).dispose?.();
-        return;
+      this.local = local;
+      const result = await local.run(
+        { type: "warmup", model, cacheDir, dtype },
+        LOCAL_WARMUP_TIMEOUT_MS,
+        progressCallback
+      );
+      if (generation !== this.generation) return;
+      if (result.type !== "ready" || this.local !== local) {
+        throw new Error("Local embedding process did not finish warming up");
       }
-      this.pipe = pipe;
       this.isWarmedUp = true;
       this.initError = null;
       this.scheduleIdleDispose();
-      log("Embedding model warmed up", {
-        model: CONFIG.embeddingModel,
-        pooling: CONFIG.embeddingPooling,
-        dtype: dtype ?? null,
-      });
+      log("Embedding model warmed up", { model, dtype: dtype ?? null });
     } catch (error) {
-      const rewritten = formatOnnxruntimeInitError(error);
+      if (generation !== this.generation) throw error;
+      const local = this.local;
+      this.local = null;
+      this.isWarmedUp = false;
+      const failure = error instanceof Error ? error : new Error(String(error));
       this.initPromise = null;
-      this.initError = rewritten.message;
-      log("Failed to initialize embedding model", { error: rewritten.message });
-      throw rewritten;
+      this.initError = failure.message;
+      await local?.close();
+      log("Failed to initialize embedding model", { error: failure.message });
+      throw failure;
     }
   }
 
-  async embed(text: string, options?: EmbedOptions): Promise<Float32Array> {
+  async embed(text: string, options?: EmbedOptions, deadline?: number): Promise<Float32Array> {
     const fingerprint = embeddingCacheFingerprint();
     if (this.cachedFingerprint !== fingerprint) {
       this.clearCache();
@@ -496,15 +452,19 @@ export class EmbeddingService {
         const data: any = await fetchRemoteEmbeddingWithRetry(fetch, input);
         result = new Float32Array(data.data[0].embedding);
       } else {
-        const pipe = this.pipe;
-        if (!pipe) {
+        const local = this.local;
+        if (!local) {
           throw new Error("Embedding model was released before the request ran");
         }
-        const output = await pipe(input, {
-          pooling: CONFIG.embeddingPooling,
-          normalize: true,
-        });
-        result = new Float32Array(output.data);
+        const remaining = deadline === undefined ? TIMEOUT_MS : deadline - performance.now();
+        if (remaining <= 0) throw new Error(`Timeout after ${TIMEOUT_MS}ms`);
+        const reply = await local.run(
+          { type: "embed", input, pooling: CONFIG.embeddingPooling },
+          remaining
+        );
+        if (reply.type !== "vector")
+          throw new Error("Local embedding process did not return a vector");
+        result = reply.vector;
       }
 
       if (this.cache.size >= MAX_CACHE_SIZE) {
@@ -527,7 +487,7 @@ export class EmbeddingService {
   }
 
   async embedWithTimeout(text: string, options?: EmbedOptions): Promise<Float32Array> {
-    return withTimeout(this.embed(text, options), TIMEOUT_MS);
+    return withTimeout(this.embed(text, options, performance.now() + TIMEOUT_MS), TIMEOUT_MS);
   }
 
   clearCache(): void {

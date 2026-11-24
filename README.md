@@ -522,7 +522,7 @@ work when it is false (manual-only mode). Soft-deleted rows are hard-purged afte
 
 Embeddings power similarity search for memories and the user profile. Configure them in the same file (`~/.config/opencode/opencode-mem.jsonc`). There is **no MLX backend** — local embeddings use `@huggingface/transformers` with ONNX, not Apple MLX.
 
-**Local (default):** set only `embeddingModel`. On first use the model is downloaded from Hugging Face and cached under `{storagePath}/.cache` (default `~/.opencode-mem/data/.cache`). The weights stay resident for the life of the host process; set `embeddingIdleTimeoutMs` to release them after that many idle milliseconds, and the next memory operation re-warms them from the local cache (about a second, not a re-download).
+**Local (default):** set only `embeddingModel`. On first use the model is downloaded from Hugging Face and cached under `{storagePath}/.cache` (default `~/.opencode-mem/data/.cache`). A single child process shared by the plugin instances in the same OpenCode process loads the model and handles one request at a time, so synchronous ONNX inference does not run on the OpenCode server thread. Set `embeddingIdleTimeoutMs` to stop the child and release its memory after that many idle milliseconds. The next memory operation re-warms it from the local cache.
 
 **Remote (OpenAI-compatible):** set both `embeddingApiUrl` and `embeddingApiKey`. The plugin then calls `{embeddingApiUrl}/embeddings` with a Bearer token. `embeddingApiKey` accepts the same secret formats as `memoryApiKey` (`literal`, `env://…`, `file://…`).
 

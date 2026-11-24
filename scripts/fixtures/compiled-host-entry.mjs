@@ -102,6 +102,26 @@ if (!allFinite || !(norm > 0.9 && norm < 1.1)) {
   console.error(`bad embedding vector (finite=${allFinite}, norm=${norm})`);
   process.exit(1);
 }
+await extractor.dispose();
+
+const configUrl = pathToFileURL(join(dirname(entryPath), "..", "config.js")).href;
+const { CONFIG } = await import(configUrl);
+CONFIG.embeddingModel = MODEL;
+CONFIG.embeddingPooling = "mean";
+CONFIG.embeddingApiUrl = undefined;
+CONFIG.embeddingApiKey = undefined;
+const service = new mod.EmbeddingService();
+try {
+  const sidecar = await service.embed("compiled-host onnx shutdown regression");
+  const maxDelta = Math.max(...sidecar.map((value, i) => Math.abs(value - vec[i])));
+  if (sidecar.length !== EXPECTED_DIMS || !Number.isFinite(maxDelta) || maxDelta > 0.00001) {
+    throw new Error(
+      `sidecar result differs from inline ONNX (dims=${sidecar.length}, maxDelta=${maxDelta})`
+    );
+  }
+} finally {
+  await service.dispose("compiled-host smoke test");
+}
 
 console.log(
   JSON.stringify({

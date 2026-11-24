@@ -79,28 +79,27 @@ describe("plugin Turso refcount (#443)", () => {
     const id = await userPromptManager.savePrompt("sess-b", "msg-b", "/tmp/p", "world");
 
     // Fake a warmed local model so the close path has something to release.
-    // Restore afterwards: leaving a stub `pipe` object poisons later suite embeds
-    // (`pipe is not a function` in profile-write).
+    // Restore afterwards so the stub cannot affect later embedding tests.
     const { embeddingService } = await import("../src/services/embedding.js");
     const released: string[] = [];
     const previous = {
-      pipe: embeddingService.pipe,
+      local: embeddingService.local,
       isWarmedUp: embeddingService.isWarmedUp,
       dispose: embeddingService.dispose,
     };
     try {
       Object.assign(embeddingService, {
-        pipe: { dispose: async () => released.push("dispose") },
+        local: { close: async () => released.push("dispose") },
         isWarmedUp: true,
       });
       // Earlier suite mocks may replace embeddingService without dispose.
       if (typeof embeddingService.dispose !== "function") {
         Object.assign(embeddingService, {
           async dispose() {
-            const pipe = this.pipe as { dispose?: () => Promise<void> } | null;
-            this.pipe = null;
+            const local = this.local as { close: () => Promise<void> } | null;
+            this.local = null;
             this.isWarmedUp = false;
-            await pipe?.dispose?.();
+            await local?.close();
           },
         });
       }
@@ -115,7 +114,7 @@ describe("plugin Turso refcount (#443)", () => {
       expect(pluginTursoRefCount()).toBe(0);
       expect(released).toEqual(["dispose"]);
     } finally {
-      embeddingService.pipe = previous.pipe;
+      embeddingService.local = previous.local;
       embeddingService.isWarmedUp = previous.isWarmedUp;
       embeddingService.dispose = previous.dispose;
     }
